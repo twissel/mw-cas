@@ -31,6 +31,36 @@ pub struct Uint14HashMap<V> {
     array: [AtomicPtr<ArrayOrKV<V>>; 256],
 }
 
+impl<V> Drop for Uint14HashMap<V> {
+    fn drop(&mut self) {
+        for el in &mut self.array[..] {
+            let ptr = el.load(Ordering::Relaxed);
+            unsafe {
+                if !ptr.is_null() {
+                    let b = Box::from_raw(ptr);
+                    match *b {
+                        ArrayOrKV::Array(second_level) => {
+                            for second_level_el in &second_level[..] {
+                                let second_level_ptr = second_level_el.load(Ordering::Relaxed);
+                                if !second_level_ptr.is_null() {
+                                    let sb = Box::from_raw(second_level_ptr);
+                                    match *sb {
+                                        ArrayOrKV::Array(_) => {
+                                            panic!("Second level element is array")
+                                        }
+                                        ArrayOrKV::KV { .. } => (),
+                                    }
+                                }
+                            }
+                        }
+                        ArrayOrKV::KV { .. } => (),
+                    }
+                }
+            }
+        }
+    }
+}
+
 impl<V> Uint14HashMap<V>
 where
     V: 'static + Send,
@@ -45,7 +75,7 @@ where
         Self { array: data }
     }
 
-    pub fn try_insert(&self, key: u16, val: V) -> Result<(), TryInsertError<V>> {
+    pub fn insert(&self, key: u16, val: V) -> &V {
         let indx = fst_lvl_idx(key);
         let mut atom_ptr = &self.array[indx];
         let to_insert = Box::into_raw(Box::new(ArrayOrKV::KV { key, val }));
@@ -60,7 +90,7 @@ where
                         Ordering::SeqCst,
                     );
                     match inserted {
-                        Ok(_) => return Ok(()),
+                        Ok(v) => return (&*v).as_kv().1,
                         Err(_) => continue,
                     }
                 } else {
@@ -70,11 +100,8 @@ where
                             ref val,
                         } => {
                             if curr_key == key {
-                                let not_inserted = Box::from_raw(to_insert);
-                                return Err(TryInsertError {
-                                    current: val,
-                                    not_inserted: not_inserted.to_kv().1,
-                                });
+                                let _ = Box::from_raw(to_insert);
+                                return val;
                             } else {
                                 try_expand_at(atom_ptr, ptr);
                             }
@@ -89,9 +116,9 @@ where
         }
     }
 
-    pub fn get(&self, key: u16) -> Option<&V>
-    where V: Sync
-    {
+    // unsafe because `V` can be !Sync
+    pub unsafe fn get(&self, key: u16) -> Option<&V>
+where {
         let idx = fst_lvl_idx(key);
         let mut atom_ptr = &self.array[idx];
         loop {
@@ -134,7 +161,7 @@ fn try_expand_at<V>(at: &AtomicPtr<ArrayOrKV<V>>, curr: *mut ArrayOrKV<V>) -> *m
         match at.compare_exchange(curr, new_lvl_ptr, Ordering::SeqCst, Ordering::SeqCst) {
             Ok(o) => o,
             Err(e) => {
-                let _ = unsafe { Box::from_raw(new_lvl_ptr) };
+                let _ = Box::from_raw(new_lvl_ptr);
                 e
             }
         }
