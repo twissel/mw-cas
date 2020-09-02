@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 static NEXT_THREAD_ID: AtomicU64 = AtomicU64::new(1);
 
 // 14bit thread id
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub struct ThreadId(u16);
 
 const U14_MAX: u64 = 16383;
@@ -21,6 +22,14 @@ impl ThreadId {
         } else {
             ThreadId(curr as u16)
         }
+    }
+
+    pub fn as_u16(&self) -> u16 {
+        self.0
+    }
+
+    pub unsafe fn from_u16(v: u16) -> Self {
+        Self(v)
     }
 }
 
