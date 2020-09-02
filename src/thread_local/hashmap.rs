@@ -31,6 +31,9 @@ pub struct Uint14HashMap<V> {
     array: [AtomicPtr<ArrayOrKV<V>>; 256],
 }
 
+unsafe impl <V: Send> Send for Uint14HashMap<V> {}
+unsafe impl <V: Sync> Sync for Uint14HashMap<V> {}
+
 impl<V> Drop for Uint14HashMap<V> {
     fn drop(&mut self) {
         for el in &mut self.array[..] {
@@ -90,7 +93,7 @@ where
                         Ordering::SeqCst,
                     );
                     match inserted {
-                        Ok(v) => return (&*v).as_kv().1,
+                        Ok(_) => return (&*to_insert).as_kv().1,
                         Err(_) => continue,
                     }
                 } else {
@@ -184,8 +187,8 @@ mod tests {
     fn it_works() {
         let m = Uint14HashMap::new();
         for key in 0..10000 {
-            assert!(m.try_insert(key, key).is_ok());
-            assert_eq!(m.get(key), Some(&key));
+            assert_eq!(m.insert(key, key), &key);
+            assert_eq!(unsafe { m.get(key) }, Some(&key));
         }
     }
 }

@@ -32,6 +32,11 @@ impl<V> ThreadLocal<V>
 where
     V: Send + 'static,
 {
+    pub fn new() -> Self {
+        Self {
+            map: Uint14HashMap::new(),
+        }
+    }
     pub fn get(&self) -> Option<&V> {
         let id = THREAD_ID.with(|id| id.0);
 
@@ -61,11 +66,36 @@ where
     }
 }
 
-
 #[cfg(test)]
 mod tests {
+    use super::ThreadLocal;
+    use std::sync::Arc;
+    use std::thread;
+
     #[test]
     fn it_works() {
-        assert_eq!(2 + 2, 4);
+        let mut handles = Vec::new();
+        let tls = Arc::new(ThreadLocal::<u64>::new());
+        let h = thread::spawn({
+            let tls = tls.clone();
+            move || {
+                let data = tls.get_or_insert_with(|| 1);
+                assert_eq!(tls.get().unwrap(), &1);
+            }
+        });
+        handles.push(h);
+
+        let h = thread::spawn({
+            let tls = tls.clone();
+            move || {
+                let data = tls.get_or_insert_with(|| 2);
+                assert_eq!(tls.get().unwrap(), &2);
+            }
+        });
+        handles.push(h);
+
+        for h in handles {
+            h.join().unwrap();
+        }
     }
 }
