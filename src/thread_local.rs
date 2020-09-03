@@ -53,16 +53,16 @@ where
         unsafe { self.map.get(id) }
     }
 
-    pub fn get_or_insert_with<F>(&self, f: F) -> &V
+    pub fn get_or_insert_with<F>(&self, f: F) -> (ThreadId, &V)
     where
         F: FnOnce() -> V,
     {
-        let id = THREAD_ID.with(|id| id.0);
+        let id = THREAD_ID.with(|id| *id);
         // safety: safe as only one thread has access to V
-        let v = unsafe { self.map.get(id) };
+        let v = unsafe { self.map.get(id.0) };
         match v {
-            Some(v) => v,
-            None => self.map.insert(id, f()),
+            Some(v) => (id, v),
+            None => (id, self.map.insert(id.0, f())),
         }
     }
 

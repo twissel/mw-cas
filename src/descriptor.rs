@@ -1,13 +1,72 @@
 use crate::thread_local::ThreadId;
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+const NUM_RESERVED_BITS: usize = 3;
+const SEQ_NUMBER_LENGTH: usize = 50;
 
 #[repr(transparent)]
+#[derive(Debug, Clone, Copy)]
 pub struct DescriptorPtr(usize);
+
+impl DescriptorPtr {
+    pub fn new(tid: ThreadId, seq: SeqNumber) -> Self {
+        let tid = (tid.as_u16() as usize) << SEQ_NUMBER_LENGTH;
+        Self(tid | (seq.as_usize() << NUM_RESERVED_BITS))
+    }
+
+    pub fn tid(&self) -> ThreadId {
+        unsafe {
+            ThreadId::from_u16((self.0 >> SEQ_NUMBER_LENGTH) as u16)
+        }
+
+    }
+
+    pub fn seq(&self) -> SeqNumber {
+        let mask = (1usize << (SEQ_NUMBER_LENGTH)) - 1;
+        let seq = (self.0 & mask) >> 3;
+        SeqNumber::from_usize(seq)
+    }
+
+    pub fn with_mark(self, mark: usize) -> Self {
+        let bits = mark & NUM_RESERVED_BITS;
+        let marked = self.0 | bits;
+        Self(marked)
+    }
+
+    pub fn mark(&self) -> usize {
+        self.0 & NUM_RESERVED_BITS
+    }
+
+    pub fn unmark(self) -> Self {
+        Self(self.0 & !NUM_RESERVED_BITS)
+    }
+
+    pub fn into_usize(self) -> usize {
+        self.0
+    }
+
+    pub unsafe fn from_usize(raw: usize) -> Self {
+        Self(raw)
+    }
+}
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub struct SeqNumber(usize);
 
 pub struct SeqNumberGenerator(AtomicUsize);
+
+
+
+impl SeqNumberGenerator {
+    pub fn new() -> Self {
+        Self(AtomicUsize::new(1))
+    }
+
+    pub fn inc(&self) -> SeqNumber {
+        let curr = self.0.fetch_add(1, Ordering::SeqCst);
+        SeqNumber(curr)
+    }
+}
 
 
 impl SeqNumber {
@@ -20,35 +79,24 @@ impl SeqNumber {
     }
 }
 
-impl DescriptorPtr {
-    pub fn new(tid: ThreadId, seq: SeqNumber) -> Self {
-        let tid = (tid.as_u16() as usize) << 50;
-        Self(tid | seq.as_usize())
-    }
-
-    pub fn tid(&self) -> ThreadId {
-        unsafe {
-            ThreadId::from_u16((self.0 >> 50) as u16)
-        }
-
-    }
-
-    pub fn seq(&self) -> SeqNumber {
-        let mask = (1usize << 50) - 1;
-        SeqNumber::from_usize(self.0 & mask)
-    }
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn it_works() {
-        let seq_number = SeqNumber::from_usize(2usize.pow(50) - 1);
+    fn test_descriptor_ptr() {
+        let seq_number = SeqNumber::from_usize(20000);
         let tid = unsafe { ThreadId::from_u16(2u16.pow(14) - 1)};
         let descriptor = DescriptorPtr::new(tid, seq_number);
         assert_eq!(descriptor.tid(), tid);
         assert_eq!(descriptor.seq(), seq_number);
+
+        let marked_descriptor = descriptor.with_mark(1);
+        assert_eq!(marked_descriptor.mark(), 1);
+        let marked_descriptor = descriptor.with_mark(2);
+        assert_eq!(marked_descriptor.mark(), 2);
+        assert_eq!(marked_descriptor.tid(), tid);
+        assert_eq!(marked_descriptor.seq(), seq_number);
     }
 }
