@@ -53,18 +53,23 @@ impl DescriptorPtr {
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub struct SeqNumber(usize);
 
+#[derive(Debug)]
 pub struct SeqNumberGenerator(AtomicUsize);
 
 
 
 impl SeqNumberGenerator {
     pub fn new() -> Self {
-        Self(AtomicUsize::new(1))
+        Self(AtomicUsize::new(0))
     }
 
     pub fn inc(&self) -> SeqNumber {
-        let curr = self.0.fetch_add(1, Ordering::SeqCst);
+        let curr = self.0.fetch_add(1, Ordering::SeqCst) + 1;
         SeqNumber(curr)
+    }
+
+    pub fn current(&self) -> SeqNumber {
+        SeqNumber(self.0.load(Ordering::SeqCst))
     }
 }
 

@@ -88,7 +88,7 @@ mod tests {
         let h = thread::spawn({
             let tls = tls.clone();
             move || {
-                let data = tls.get_or_insert_with(|| 1);
+                let _ = tls.get_or_insert_with(|| 1);
                 assert_eq!(tls.get().unwrap(), &1);
             }
         });
@@ -97,7 +97,7 @@ mod tests {
         let h = thread::spawn({
             let tls = tls.clone();
             move || {
-                let data = tls.get_or_insert_with(|| 2);
+                let _ = tls.get_or_insert_with(|| 2);
                 assert_eq!(tls.get().unwrap(), &2);
             }
         });

@@ -31,8 +31,8 @@ pub struct Uint14HashMap<V> {
     array: [AtomicPtr<ArrayOrKV<V>>; 256],
 }
 
-unsafe impl <V: Send> Send for Uint14HashMap<V> {}
-unsafe impl <V: Sync> Sync for Uint14HashMap<V> {}
+unsafe impl<V: Send> Send for Uint14HashMap<V> {}
+unsafe impl<V: Sync> Sync for Uint14HashMap<V> {}
 
 impl<V> Drop for Uint14HashMap<V> {
     fn drop(&mut self) {
@@ -126,19 +126,17 @@ where {
         let mut atom_ptr = &self.array[idx];
         loop {
             let ptr: *mut ArrayOrKV<V> = atom_ptr.load(Ordering::SeqCst);
-            unsafe {
-                if ptr.is_null() {
-                    return None;
-                } else {
-                    match *ptr {
-                        ArrayOrKV::KV {
-                            key: curr_key,
-                            ref val,
-                        } => return if curr_key == key { Some(val) } else { None },
-                        ArrayOrKV::Array(ref array) => {
-                            atom_ptr = &array[scd_lvl_idx(key)];
-                            continue;
-                        }
+            if ptr.is_null() {
+                return None;
+            } else {
+                match *ptr {
+                    ArrayOrKV::KV {
+                        key: curr_key,
+                        ref val,
+                    } => return if curr_key == key { Some(val) } else { None },
+                    ArrayOrKV::Array(ref array) => {
+                        atom_ptr = &array[scd_lvl_idx(key)];
+                        continue;
                     }
                 }
             }
