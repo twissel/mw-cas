@@ -1,110 +1,65 @@
 use crate::descriptor::{DescriptorPtr, SeqNumberGenerator};
 use crate::thread_local::ThreadLocal;
 use crossbeam_epoch::{Atomic, Guard, Owned, Pointer, Shared};
+use once_cell::sync::Lazy;
 use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 
 const DESCRIPTOR_MARKER: usize = 1;
 
-struct PerThreadRDCSSDescriptor<T0, T1> {
-    addr0: AtomicPtr<Atomic<T0>>,
-    addr1: AtomicPtr<Atomic<T1>>,
-    exp0: AtomicUsize,
-    exp1: AtomicUsize,
-    new: AtomicUsize,
+static RDCSS_DESCRIPTOR: Lazy<RDCSSDescriptor> = Lazy::new(|| RDCSSDescriptor::new());
 
+struct PerThreadRDCSSDescriptor {
+    status_location_cell: AtomicPtr<AtomicUsize>,
+    data_location_cell: AtomicPtr<AtomicUsize>,
+    expected_status_cell: AtomicUsize,
+    expected_ptr_cell: AtomicUsize,
+    kcas_ptr_cell: AtomicUsize,
     seq_number: SeqNumberGenerator,
-    _mark: std::marker::PhantomData<*mut T1>,
 }
 
-unsafe impl<T0, T1> Send for PerThreadRDCSSDescriptor<T0, T1> {}
-unsafe impl<T0, T1> Sync for PerThreadRDCSSDescriptor<T0, T1> {}
-
-impl<T0, T1> PerThreadRDCSSDescriptor<T0, T1> {
+impl PerThreadRDCSSDescriptor {
     fn new() -> Self {
         Self {
-            addr0: AtomicPtr::default(),
-            addr1: AtomicPtr::default(),
-            exp0: AtomicUsize::new(0),
-            exp1: AtomicUsize::new(0),
-            new: AtomicUsize::new(0),
+            status_location_cell: AtomicPtr::default(),
+            data_location_cell: AtomicPtr::default(),
+            expected_status_cell: AtomicUsize::new(0),
+            expected_ptr_cell: AtomicUsize::new(0),
+            kcas_ptr_cell: AtomicUsize::new(0),
             seq_number: SeqNumberGenerator::new(),
-            _mark: std::marker::PhantomData,
         }
     }
 
-    fn read_fields(&self) -> PerThreadsDescriptorFields<'_, T0, T1> {
+    fn read_fields(&self) -> PerThreadsDescriptorFields {
         unsafe {
-            let addr0: *mut Atomic<T0> = self.addr0.load(Ordering::SeqCst);
-            let addr1: *mut Atomic<T1> = self.addr1.load(Ordering::SeqCst);
-            let exp0: Shared<T0> = Shared::from_usize(self.exp0.load(Ordering::SeqCst));
-            let exp1: Shared<T1> = Shared::from_usize(self.exp1.load(Ordering::SeqCst));
-            let new: Shared<T1> = Shared::from_usize(self.new.load(Ordering::SeqCst));
+            let addr0: *mut AtomicUsize = self.status_location_cell.load(Ordering::SeqCst);
+            let addr1: *mut AtomicUsize = self.data_location_cell.load(Ordering::SeqCst);
+            let exp0: usize = self.expected_status_cell.load(Ordering::SeqCst);
+            let exp1: usize = self.expected_ptr_cell.load(Ordering::SeqCst);
+            let new: usize = self.kcas_ptr_cell.load(Ordering::SeqCst);
             PerThreadsDescriptorFields {
-                addr0: &*addr0,
-                addr1: &*addr1,
-                exp0,
-                exp1,
-                new,
+                status_location: &*addr0,
+                data_location: &*addr1,
+                expected_status: exp0,
+                expected_data_ptr: exp1,
+                kcas_ptr: new,
             }
         }
     }
 }
 
-struct PerThreadsDescriptorFields<'g, T0, T1> {
-    addr0: &'g Atomic<T0>,
-    addr1: &'g Atomic<T1>,
-    exp0: Shared<'g, T0>,
-    exp1: Shared<'g, T1>,
-    new: Shared<'g, T1>,
+struct PerThreadsDescriptorFields<'g> {
+    status_location: &'g AtomicUsize,
+    data_location: &'g AtomicUsize,
+    expected_status: usize,
+    expected_data_ptr: usize,
+    kcas_ptr: usize,
 }
 
-#[repr(transparent)]
-pub struct RDCSSAtomic<T>(Atomic<T>);
-
-impl<T> RDCSSAtomic<T> {
-    pub fn new(atom: Atomic<T>) -> Self {
-        RDCSSAtomic(atom)
-    }
-
-    pub fn load<'g>(&self, guard: &'g Guard) -> RDCSSShared<'g, T> {
-        let s = self.0.load(Ordering::SeqCst, &guard);
-        RDCSSShared(s)
-    }
+pub struct RDCSSDescriptor {
+    per_thread_descriptors: ThreadLocal<PerThreadRDCSSDescriptor>,
 }
 
-#[repr(transparent)]
-pub struct RDCSSOwned<T>(Owned<T>);
-
-impl<T> RDCSSOwned<T> {
-    pub fn new(t: T) -> Self {
-        Self(Owned::new(t))
-    }
-
-    pub fn into_shared<'g>(self, guard: &'g Guard) -> RDCSSShared<'g, T> {
-        RDCSSShared(self.0.into_shared(guard))
-    }
-}
-
-#[derive(PartialEq, Eq, Debug)]
-pub struct RDCSSShared<'g, T>(Shared<'g, T>);
-
-impl<'g, T> Clone for RDCSSShared<'g, T> {
-    fn clone(&self) -> Self {
-        RDCSSShared(self.0.clone())
-    }
-}
-
-impl<'g, T> Copy for RDCSSShared<'g, T> {}
-
-pub struct RDCSSDescriptor<T0, T1> {
-    per_thread_descriptors: ThreadLocal<PerThreadRDCSSDescriptor<T0, T1>>,
-}
-
-impl<T0, T1> RDCSSDescriptor<T0, T1>
-where
-    T0: 'static,
-    T1: 'static,
-{
+impl RDCSSDescriptor {
     pub fn new() -> Self {
         Self {
             per_thread_descriptors: ThreadLocal::new(),
@@ -113,32 +68,26 @@ where
 
     pub fn new_ptr(
         &self,
-        addr0: &Atomic<T0>,
-        addr1: &RDCSSAtomic<T1>,
-        exp0: Shared<'_, T1>,
-        exp1: RDCSSShared<'_, T1>,
-        new1: RDCSSShared<'_, T1>,
+        status_location: &AtomicUsize,
+        data_location: &AtomicUsize,
+        expected_status: usize,
+        expected_data: usize,
+        new_kcas_ptr: usize,
     ) -> DescriptorPtr {
         let (thread_id, per_thread_descriptor) = self
             .per_thread_descriptors
             .get_or_insert_with(PerThreadRDCSSDescriptor::new);
         per_thread_descriptor.seq_number.inc();
         per_thread_descriptor
-            .addr0
-            .store(addr0 as *const Atomic<T0> as *mut _, Ordering::SeqCst);
+            .status_location_cell
+            .store(status_location as *const AtomicUsize as *mut _, Ordering::SeqCst);
         per_thread_descriptor
-            .addr1
-            .store(&addr1.0 as *const Atomic<T1> as *mut _, Ordering::SeqCst);
+            .data_location_cell
+            .store(data_location as *const AtomicUsize as *mut _, Ordering::SeqCst);
 
-        per_thread_descriptor
-            .exp0
-            .store(exp0.into_usize(), Ordering::SeqCst);
-        per_thread_descriptor
-            .exp1
-            .store(exp1.0.into_usize(), Ordering::SeqCst);
-        per_thread_descriptor
-            .new
-            .store(new1.0.into_usize(), Ordering::SeqCst);
+        per_thread_descriptor.expected_status_cell.store(expected_status, Ordering::SeqCst);
+        per_thread_descriptor.expected_ptr_cell.store(expected_data, Ordering::SeqCst);
+        per_thread_descriptor.kcas_ptr_cell.store(new_kcas_ptr, Ordering::SeqCst);
 
         let new_seq = per_thread_descriptor.seq_number.inc();
         DescriptorPtr::new(thread_id, new_seq).with_mark(DESCRIPTOR_MARKER)
@@ -146,35 +95,33 @@ where
 
     pub fn rdcss<'g>(
         &self,
-        addr0: &Atomic<T0>,
-        addr1: &RDCSSAtomic<T1>,
-        exp0: Shared<'_, T1>,
-        exp1: RDCSSShared<'_, T1>,
-        new1: RDCSSShared<'_, T1>,
-        guard: &'g Guard,
-    ) -> RDCSSShared<'g, T1> {
-        let des_ptr = self.new_ptr(addr0, addr1, exp0, exp1, new1);
+        status_location: &AtomicUsize,
+        data_location: &AtomicUsize,
+        expected_status: usize,
+        expected_data_ptr: usize,
+        new_kcas_ptr: usize,
+    ) -> usize {
+        let des_ptr = self.new_ptr(status_location, data_location, expected_status, expected_data_ptr, new_kcas_ptr);
         unsafe {
-            let des_ptr_shared = Shared::from_usize(des_ptr.into_usize());
             loop {
-                let installed =
-                    addr1
-                        .0
-                        .compare_and_set(exp1.0, des_ptr_shared, Ordering::SeqCst, &guard);
+                let installed = data_location.compare_exchange(
+                    expected_data_ptr,
+                    des_ptr.into_usize(),
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                );
                 match installed {
                     Ok(_) => {
-                        self.rdcss_help(des_ptr, guard);
-                        return RDCSSShared(Shared::from_usize(exp1.0.into_usize()));
+                        self.rdcss_help(des_ptr);
+                        return expected_data_ptr;
                     }
-                    Err(e) => {
-                        let curr_ptr = e.current.into_usize();
-                        let curr = DescriptorPtr::from_usize(curr_ptr);
-                        if is_marked(curr) {
-                            self.rdcss_help(curr, guard);
+                    Err(new_curr) => {
+                        let new_curr = DescriptorPtr::from_usize(new_curr);
+                        if is_marked(new_curr) {
+                            self.rdcss_help(new_curr);
                             continue;
                         } else {
-                            let new = RDCSSShared(Shared::from_usize(curr_ptr));
-                            return new;
+                            return new_curr.into_usize();
                         }
                     }
                 }
@@ -182,34 +129,31 @@ where
         }
     }
 
-    fn rdcss_help<'g>(&self, des: DescriptorPtr, guard: &Guard) {
+    fn rdcss_help<'g>(&self, des: DescriptorPtr) {
         let fields = self.read_fields(des);
         unsafe {
             if let Ok(fields) = fields {
-                let curr0 = fields.addr0.load(Ordering::SeqCst, guard);
-                if curr0 == fields.exp0 {
-                    fields.addr1.compare_and_set(
-                        Shared::from_usize(des.into_usize()),
-                        fields.new,
+                let curr_status = fields.status_location.load(Ordering::SeqCst);
+                if curr_status == fields.expected_status {
+                    let _ = fields.data_location.compare_exchange(
+                        des.into_usize(),
+                        fields.kcas_ptr,
                         Ordering::SeqCst,
-                        guard,
+                        Ordering::SeqCst,
                     );
                 } else {
-                    fields.addr1.compare_and_set(
-                        Shared::from_usize(des.into_usize()),
-                        fields.exp1,
+                    let _ = fields.data_location.compare_exchange(
+                        des.into_usize(),
+                        fields.expected_data_ptr,
                         Ordering::SeqCst,
-                        guard,
+                        Ordering::SeqCst,
                     );
                 }
             }
         }
     }
 
-    fn read_fields(
-        &self,
-        des: DescriptorPtr,
-    ) -> Result<PerThreadsDescriptorFields<'_, T0, T1>, ()> {
+    fn read_fields(&self, des: DescriptorPtr) -> Result<PerThreadsDescriptorFields, ()> {
         let tid = des.tid();
         let seq = des.seq();
         let curr_thread_desciptor = self
@@ -242,15 +186,25 @@ mod tests {
     #[test]
     fn test_descriptor() {
         let g = pin();
-        let atom = Atomic::new(5);
-        let atom_exp = atom.load(Ordering::SeqCst, &g);
-        let rdcss_atom = RDCSSAtomic::new(Atomic::new(5));
-        let rdcss_exp = rdcss_atom.load(&g);
-        let des = RDCSSDescriptor::<usize, usize>::new();
-        let rdcss_new = RDCSSOwned::new(10).into_shared(&g);
+        let atom = AtomicUsize::new(1000);
+        let atom_exp = 1000;
+        let rdcss_atom = AtomicUsize::new(10);
+        let rdcss_exp = 10;
+        let des = RDCSSDescriptor::new();
+        let rdcss_new = 2000;
         let ptr = des.new_ptr(&atom, &rdcss_atom, atom_exp, rdcss_exp, rdcss_new);
         assert!(is_marked(ptr));
-        let swapped = des.rdcss(&atom, &rdcss_atom, atom_exp, rdcss_exp, rdcss_new, &g);
+        let swapped = des.rdcss(&atom, &rdcss_atom, atom_exp, rdcss_exp, rdcss_new);
         assert_eq!(swapped, rdcss_exp);
+
+        atom.store(10001, Ordering::SeqCst);
+        let swapped = des.rdcss(&atom, &rdcss_atom, atom_exp, rdcss_exp, rdcss_new);
+        assert_ne!(swapped, rdcss_exp);
+
+        atom.store(1000, Ordering::SeqCst);
+        rdcss_atom.store(11, Ordering::SeqCst);
+        let swapped = des.rdcss(&atom, &rdcss_atom, atom_exp, rdcss_exp, rdcss_new);
+        assert_ne!(swapped, rdcss_exp);
+        assert_ne!(11, rdcss_exp);
     }
 }

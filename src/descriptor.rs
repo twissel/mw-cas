@@ -15,10 +15,7 @@ impl DescriptorPtr {
     }
 
     pub fn tid(&self) -> ThreadId {
-        unsafe {
-            ThreadId::from_u16((self.0 >> SEQ_NUMBER_LENGTH) as u16)
-        }
-
+        unsafe { ThreadId::from_u16((self.0 >> SEQ_NUMBER_LENGTH) as u16) }
     }
 
     pub fn seq(&self) -> SeqNumber {
@@ -56,8 +53,6 @@ pub struct SeqNumber(usize);
 #[derive(Debug)]
 pub struct SeqNumberGenerator(AtomicUsize);
 
-
-
 impl SeqNumberGenerator {
     pub fn new() -> Self {
         Self(AtomicUsize::new(0))
@@ -73,7 +68,6 @@ impl SeqNumberGenerator {
     }
 }
 
-
 impl SeqNumber {
     pub fn as_usize(&self) -> usize {
         self.0
@@ -84,7 +78,6 @@ impl SeqNumber {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -92,7 +85,7 @@ mod tests {
     #[test]
     fn test_descriptor_ptr() {
         let seq_number = SeqNumber::from_usize(20000);
-        let tid = unsafe { ThreadId::from_u16(2u16.pow(14) - 1)};
+        let tid = unsafe { ThreadId::from_u16(2u16.pow(14) - 1) };
         let descriptor = DescriptorPtr::new(tid, seq_number);
         assert_eq!(descriptor.tid(), tid);
         assert_eq!(descriptor.seq(), seq_number);
