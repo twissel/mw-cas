@@ -76,22 +76,15 @@ fn cas2_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("cas2");
     group.throughput(Throughput::Elements(ITER as u64));
 
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(24)
-        .build()
-        .unwrap();
-
     group.bench_function("cas2", |b| {
-        pool.install(|| {
-            b.iter_batched(
-                || Arc::new([Atomic::new(0), Atomic::new(0)]),
-                |map| {
-                    let m = cas2_attemts(map, 24);
-                    m
-                },
-                BatchSize::SmallInput,
-            )
-        });
+        b.iter_batched(
+            || Arc::new([Atomic::new(0), Atomic::new(0)]),
+            |map| {
+                let m = cas2_attemts(map, 24);
+                m
+            },
+            BatchSize::SmallInput,
+        )
     });
 
     /*group.bench_function("cas1", |b| {

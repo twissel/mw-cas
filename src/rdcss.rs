@@ -2,9 +2,9 @@ use crate::descriptor::{MarkedPtr, SeqNumberGenerator};
 use crate::mcas::{Cas2DescriptorStatus, Cas2DescriptorStatusCell};
 use crate::ptr::{AtomicMarkedPtr, PtrCell};
 use crate::thread_local::ThreadLocal;
-use once_cell::sync::Lazy;
-use std::sync::atomic::{AtomicPtr, Ordering, fence};
 use crossbeam_utils::CachePadded;
+use once_cell::sync::Lazy;
+use std::sync::atomic::{fence, AtomicPtr, Ordering};
 
 pub(crate) static RDCSS_DESCRIPTOR: Lazy<RDCSSDescriptor> = Lazy::new(|| RDCSSDescriptor::new());
 
@@ -92,12 +92,8 @@ impl RDCSSDescriptor {
         per_thread_descriptor
             .expected_status_cell
             .store(expected_status);
-        per_thread_descriptor
-            .expected_ptr_cell
-            .store(expected_data);
-        per_thread_descriptor
-            .kcas_ptr_cell
-            .store(new_kcas_ptr);
+        per_thread_descriptor.expected_ptr_cell.store(expected_data);
+        per_thread_descriptor.kcas_ptr_cell.store(new_kcas_ptr);
 
         let new_seq = per_thread_descriptor.seq_number.inc();
         MarkedPtr::new(thread_id, new_seq).with_mark(Self::MARK)
@@ -119,41 +115,32 @@ impl RDCSSDescriptor {
             new_kcas_ptr,
         );
         loop {
-            let installed = data_location.compare_exchange(
-                expected_data_ptr,
-                des_ptr,
-            );
-            match installed {
-                Ok(_) => {
-                    self.rdcss_help(des_ptr);
-                    return expected_data_ptr;
-                }
-                Err(new_curr) => {
-                    if is_marked(new_curr) {
-                        self.rdcss_help(new_curr);
-                        continue;
-                    } else {
-                        return new_curr;
-                    }
-                }
+            let current = data_location.load();
+            if is_marked(current) {
+                self.rdcss_help(des_ptr);
+                continue;
+            }
+            if current != expected_data_ptr {
+                return current;
+            }
+            let installed = data_location.compare_exchange(expected_data_ptr, des_ptr);
+            if let Ok(_) = installed {
+                self.rdcss_help(des_ptr);
+                return expected_data_ptr;
             }
         }
     }
 
-    fn rdcss_help<'g>(&self, des: MarkedPtr) {
+    fn rdcss_help(&self, des: MarkedPtr) {
         let fields = self.read_fields(des);
         if let Ok(fields) = fields {
             let curr_status = fields.status_location.load();
             if curr_status == fields.expected_status {
-                let _ = fields.data_location.compare_exchange(
-                    des,
-                    fields.kcas_ptr,
-                );
+                let _ = fields.data_location.compare_exchange(des, fields.kcas_ptr);
             } else {
-                let _ = fields.data_location.compare_exchange(
-                    des,
-                    fields.expected_data_ptr,
-                );
+                let _ = fields
+                    .data_location
+                    .compare_exchange(des, fields.expected_data_ptr);
             }
         }
     }
@@ -179,7 +166,7 @@ impl RDCSSDescriptor {
 
     pub(crate) fn read(&self, addr_loc: &AtomicMarkedPtr) -> MarkedPtr {
         loop {
-            let ptr =  addr_loc.load();
+            let ptr = addr_loc.load();
             if is_marked(ptr) {
                 self.rdcss_help(ptr);
             } else {

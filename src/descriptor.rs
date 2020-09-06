@@ -40,6 +40,7 @@ impl MarkedPtr {
         Self(marked)
     }
 
+    #[inline]
     pub fn mark(&self) -> usize {
         self.0 & NUM_RESERVED_BITS
     }
