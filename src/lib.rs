@@ -2,7 +2,10 @@
 
 pub(crate) mod descriptor;
 pub(crate) mod rdcss;
-pub(crate) mod thread_local;
+
+//pub for benches
+pub  mod thread_local;
+pub (crate) mod ptr;
 
 pub mod mcas;
 

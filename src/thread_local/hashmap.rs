@@ -13,19 +13,8 @@ impl<V> ArrayOrKV<V> {
             ArrayOrKV::Array(_) => panic!("ArrayOrKV is ArrayOrKV::Array"),
         }
     }
-
-    fn to_kv(self) -> (u16, V) {
-        match self {
-            ArrayOrKV::KV { key, val } => (key, val),
-            ArrayOrKV::Array(_) => panic!("ArrayOrKV is ArrayOrKV::Array"),
-        }
-    }
 }
 
-pub struct TryInsertError<'a, V> {
-    pub current: &'a V,
-    pub not_inserted: V,
-}
 
 pub struct Uint14HashMap<V> {
     array: [AtomicPtr<ArrayOrKV<V>>; 256],

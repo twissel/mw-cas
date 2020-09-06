@@ -1,14 +1,24 @@
 use crate::thread_local::ThreadId;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use crossbeam_epoch::Shared;
+use std::sync::atomic::{AtomicUsize, Ordering, fence};
 
 const NUM_RESERVED_BITS: usize = 3;
-const SEQ_NUMBER_LENGTH: usize = 50;
+pub(crate) const SEQ_NUMBER_LENGTH: usize = 50;
+use crossbeam_epoch::Pointer;
+use std::fmt;
 
 #[repr(transparent)]
-#[derive(Debug, Clone, Copy)]
-pub struct DescriptorPtr(usize);
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub struct MarkedPtr(usize);
 
-impl DescriptorPtr {
+impl fmt::Debug for MarkedPtr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "MarkedPtr tid = {:?}, seq: {:?}", self.tid(), self.seq())?;
+        Ok(())
+    }
+}
+
+impl MarkedPtr {
     pub fn new(tid: ThreadId, seq: SeqNumber) -> Self {
         let tid = (tid.as_u16() as usize) << SEQ_NUMBER_LENGTH;
         Self(tid | (seq.as_usize() << NUM_RESERVED_BITS))
@@ -20,7 +30,7 @@ impl DescriptorPtr {
 
     pub fn seq(&self) -> SeqNumber {
         let mask = (1usize << (SEQ_NUMBER_LENGTH)) - 1;
-        let seq = (self.0 & mask) >> 3;
+        let seq = (self.0 & mask) >> NUM_RESERVED_BITS;
         SeqNumber::from_usize(seq)
     }
 
@@ -34,21 +44,29 @@ impl DescriptorPtr {
         self.0 & NUM_RESERVED_BITS
     }
 
-    pub fn unmark(self) -> Self {
-        Self(self.0 & !NUM_RESERVED_BITS)
-    }
-
     pub fn into_usize(self) -> usize {
         self.0
     }
 
-    pub unsafe fn from_usize(raw: usize) -> Self {
+    pub fn from_usize(raw: usize) -> Self {
         Self(raw)
+    }
+}
+
+impl<T> From<Shared<'_, T>> for MarkedPtr {
+    fn from(s: Shared<'_, T>) -> Self {
+         MarkedPtr::from_usize(s.into_usize())
     }
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub struct SeqNumber(usize);
+
+impl SeqNumber {
+    pub fn inc(&self) -> SeqNumber {
+        Self(self.0 + 1)
+    }
+}
 
 #[derive(Debug)]
 pub struct SeqNumberGenerator(AtomicUsize);
@@ -73,7 +91,7 @@ impl SeqNumber {
         self.0
     }
 
-    fn from_usize(v: usize) -> Self {
+    pub fn from_usize(v: usize) -> Self {
         Self(v)
     }
 }
@@ -86,7 +104,7 @@ mod tests {
     fn test_descriptor_ptr() {
         let seq_number = SeqNumber::from_usize(20000);
         let tid = unsafe { ThreadId::from_u16(2u16.pow(14) - 1) };
-        let descriptor = DescriptorPtr::new(tid, seq_number);
+        let descriptor = MarkedPtr::new(tid, seq_number);
         assert_eq!(descriptor.tid(), tid);
         assert_eq!(descriptor.seq(), seq_number);
 
