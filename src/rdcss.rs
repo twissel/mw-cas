@@ -2,7 +2,7 @@ use crate::descriptor::{MarkedPtr, SeqNumberGenerator};
 use crate::mcas::{Cas2DescriptorStatus, Cas2DescriptorStatusCell};
 use crate::ptr::{AtomicMarkedPtr, PtrCell};
 use crate::thread_local::ThreadLocal;
-use crossbeam_utils::CachePadded;
+use crossbeam_utils::{CachePadded, Backoff};
 use once_cell::sync::Lazy;
 use std::sync::atomic::{fence, AtomicPtr, Ordering};
 
@@ -114,10 +114,15 @@ impl RDCSSDescriptor {
             expected_data_ptr,
             new_kcas_ptr,
         );
+        let backoff = Backoff::new();
         loop {
             let current = data_location.load();
             if is_marked(current) {
-                self.rdcss_help(des_ptr);
+                if backoff.is_completed() {
+                    self.rdcss_help(des_ptr);
+                } else {
+                    backoff.spin();
+                }
                 continue;
             }
             if current != expected_data_ptr {
