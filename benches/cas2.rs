@@ -7,7 +7,7 @@ use std::sync::Arc;
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-const ITER: u64 = 24 * 2048;
+const ITER: u64 = 24 * 4048;
 fn cas2_attemts(atomics: Arc<[Atomic<u32>; 2]>, threads: usize) -> [Atomic<u32>; 2] {
     let mut handles = Vec::new();
     let per_thread = ITER / threads as u64;
@@ -39,23 +39,34 @@ fn cas2_attemts(atomics: Arc<[Atomic<u32>; 2]>, threads: usize) -> [Atomic<u32>;
     }
 
     match Arc::try_unwrap(atomics) {
-        Ok(a) => {
-            a
-        }
+        Ok(a) => a,
         Err(_) => panic!("failed to unwrap"),
     }
 }
 
-fn cas_attemts(atomic: Arc<AtomicPtr<u32>>, threads: usize) -> AtomicPtr<u32> {
+fn cas_attemts(atomics: Arc<[AtomicPtr<u32>; 2]>, threads: usize) -> [AtomicPtr<u32>; 2] {
     let per_thread = ITER / threads as u64;
     let mut handles = Vec::new();
     for thread in 0..threads {
-        let atom = atomic.clone();
+        let atoms = atomics.clone();
         let h = std::thread::spawn(move || {
-            let ptr = Box::into_raw(Box::new(thread as u32));
+            let desired_first = Box::into_raw(Box::new(thread as u32));
+            let desired_second = Box::into_raw(Box::new(thread as u32));
             for _ in 0..per_thread {
-                let curr = atom.load(Ordering::SeqCst);
-                atom.compare_exchange(curr, ptr, Ordering::SeqCst, Ordering::SeqCst);
+                let curr_first = atoms[0].load(Ordering::SeqCst);
+                let curr_second = atoms[0].load(Ordering::SeqCst);
+                atoms[0].compare_exchange(
+                    curr_first,
+                    desired_first,
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                );
+                atoms[1].compare_exchange(
+                    curr_second,
+                    desired_second,
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                );
             }
         });
 
@@ -66,7 +77,7 @@ fn cas_attemts(atomic: Arc<AtomicPtr<u32>>, threads: usize) -> AtomicPtr<u32> {
         h.join().unwrap();
     }
 
-    match Arc::try_unwrap(atomic) {
+    match Arc::try_unwrap(atomics) {
         Ok(a) => a,
         Err(_) => panic!("failed to unwrap"),
     }
@@ -87,18 +98,16 @@ fn cas2_benchmark(c: &mut Criterion) {
         )
     });
 
-    /*group.bench_function("cas1", |b| {
-        pool.install(|| {
-            b.iter_batched(
-                || Arc::new(AtomicPtr::new(Box::into_raw(Box::new(0)))),
-                |atom| {
-                    let m = cas_attemts(atom, 24);
-                    m
-                },
-                BatchSize::SmallInput,
-            )
-        });
-    });*/
+    group.bench_function("native_cas", |b| {
+        b.iter_batched(
+            || Arc::new([AtomicPtr::default(), AtomicPtr::default()]),
+            |atom| {
+                let m = cas_attemts(atom, 24);
+                m
+            },
+            BatchSize::SmallInput,
+        )
+    });
     group.finish();
 }
 

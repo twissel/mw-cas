@@ -4,7 +4,7 @@ use crate::ptr::{AtomicMarkedPtr, PtrCell};
 use crate::thread_local::ThreadLocal;
 use crossbeam_utils::{CachePadded, Backoff};
 use once_cell::sync::Lazy;
-use std::sync::atomic::{fence, AtomicPtr, Ordering};
+use std::sync::atomic::{AtomicPtr, Ordering};
 
 pub(crate) static RDCSS_DESCRIPTOR: Lazy<RDCSSDescriptor> = Lazy::new(|| RDCSSDescriptor::new());
 
@@ -80,7 +80,6 @@ impl RDCSSDescriptor {
             .per_thread_descriptors
             .get_or_insert_with(|| CachePadded::new(PerThreadRDCSSDescriptor::new()));
         per_thread_descriptor.seq_number.inc();
-        fence(Ordering::SeqCst);
         per_thread_descriptor.status_location_cell.store(
             status_location as *const Cas2DescriptorStatusCell as *mut _,
             Ordering::SeqCst,
@@ -153,15 +152,15 @@ impl RDCSSDescriptor {
     fn read_fields(&self, des: MarkedPtr) -> Result<PerThreadsDescriptorFields, ()> {
         let tid = des.tid();
         let seq = des.seq();
-        let curr_thread_desciptor = self
+        let curr_thread_descriptor = self
             .per_thread_descriptors
             .get_for_thread(tid)
             .expect("Missing thread descriptor");
-        if seq != curr_thread_desciptor.seq_number.current() {
+        if seq != curr_thread_descriptor.seq_number.current() {
             Err(())
         } else {
-            let fields = curr_thread_desciptor.read_fields();
-            if seq != curr_thread_desciptor.seq_number.current() {
+            let fields = curr_thread_descriptor.read_fields();
+            if seq != curr_thread_descriptor.seq_number.current() {
                 Err(())
             } else {
                 Ok(fields)
@@ -193,8 +192,8 @@ mod tests {
 
     #[test]
     fn test_descriptor() {
-        let g = pin();
-        /*let atom = AtomicUsize::new(1000);
+        /*let g = pin();
+        let atom = AtomicUsize::new(1000);
         let atom_exp = 1000;
         let rdcss_atom = AtomicUsize::new(10);
         let rdcss_exp = 10;

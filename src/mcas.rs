@@ -3,10 +3,10 @@ use crate::ptr::{AtomicMarkedPtr, PtrCell};
 use crate::rdcss::RDCSS_DESCRIPTOR;
 use crate::thread_local::ThreadLocal;
 use crossbeam_epoch::{Guard, Pointer, Shared};
+use crossbeam_utils::{Backoff, CachePadded};
 use once_cell::sync::Lazy;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use crossbeam_utils::CachePadded;
 
 static CAS2_DESCRIPTOR: Lazy<Cas2Descriptor> = Lazy::new(|| Cas2Descriptor::new());
 
@@ -124,11 +124,8 @@ impl Cas2Descriptor {
             && descriptor_current_status.status() == Cas2DescriptorStatus::UNDECIDED
         {
             let mut new_status = Cas2DescriptorStatus::succeeded(descriptor_seq);
-            let start = if help {
-                1
-            } else {
-                0
-            };
+            let start = if help { 1 } else { 0 };
+            let backoff = Backoff::new();
             'entry_loop: for entry in &descriptor.entries[start..] {
                 'install_loop: loop {
                     let entry_addr = entry.addr.load();
@@ -142,7 +139,11 @@ impl Cas2Descriptor {
                     );
 
                     if swapped.mark() == Cas2Descriptor::MARK && swapped != descriptor_ptr {
-                        self.cas2_help(swapped, true);
+                        if backoff.is_completed() {
+                            self.cas2_help(swapped, true);
+                        } else {
+                            backoff.spin();
+                        }
                         continue 'install_loop;
                     } else {
                         if swapped != entry_exp {
@@ -159,7 +160,7 @@ impl Cas2Descriptor {
             if descriptor_current_status.status() == Cas2DescriptorStatus::UNDECIDED
                 && expected_status.seq_number() == descriptor_current_status.seq_number()
             {
-                descriptor
+                let _ = descriptor
                     .status
                     .compare_exchange(expected_status, new_status);
             }
@@ -226,13 +227,16 @@ impl Cas2DescriptorStatusCell {
         &self,
         expected_status: Cas2DescriptorStatus,
         new_status: Cas2DescriptorStatus,
-    ) {
-        let _ = self.0.compare_exchange(
+    ) -> Result<Cas2DescriptorStatus, Cas2DescriptorStatus> {
+        let swapped = self.0.compare_exchange(
             expected_status.0,
             new_status.0,
             Ordering::SeqCst,
             Ordering::SeqCst,
         );
+        swapped
+            .map(Cas2DescriptorStatus::from_usize)
+            .map_err(Cas2DescriptorStatus::from_usize)
     }
 }
 
@@ -271,6 +275,10 @@ impl Cas2DescriptorStatus {
 
     fn status(&self) -> usize {
         self.0 & ((1 << 8) - 1)
+    }
+
+    fn from_usize(status: usize) -> Self {
+        Self(status)
     }
 }
 

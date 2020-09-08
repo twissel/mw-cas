@@ -1,6 +1,6 @@
 use crate::thread_local::ThreadId;
 use crossbeam_epoch::Shared;
-use std::sync::atomic::{AtomicUsize, Ordering, fence};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 const NUM_RESERVED_BITS: usize = 3;
 pub(crate) const SEQ_NUMBER_LENGTH: usize = 50;
