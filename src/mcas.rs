@@ -90,7 +90,7 @@ impl Cas2Descriptor {
             } else {
                 (
                     &per_thread_descriptor.entries[1],
-                    &per_thread_descriptor.entries[1],
+                    &per_thread_descriptor.entries[0],
                 )
             };
         addr0_entry.addr.store(&addr0.data);
@@ -165,6 +165,7 @@ impl Cas2Descriptor {
                     .compare_exchange(expected_status, new_status);
             }
 
+            // Phase 2.
             let descriptor_current_status = descriptor.status.load();
             let succeeded = descriptor_current_status.status() == Cas2DescriptorStatus::SUCCEEDED;
             for entry in &descriptor.entries {
@@ -178,6 +179,7 @@ impl Cas2Descriptor {
                 if descriptor_current_status.seq_number() == descriptor_seq {
                     let _ = addr.compare_exchange(descriptor_ptr, new);
                 } else {
+                    // thread we was trying to help, already finished this operation, nothing to do
                     return false;
                 }
             }
@@ -274,11 +276,17 @@ impl Cas2DescriptorStatus {
     }
 
     fn status(&self) -> usize {
-        self.0 & ((1 << 8) - 1)
+        self.0 & ((1 << Self::NUM_STATUS_BITS) - 1)
     }
 
     fn from_usize(status: usize) -> Self {
         Self(status)
+    }
+}
+
+impl std::fmt::Debug for Cas2DescriptorStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Cas2DescriptorStatus seq_num = {}, status = {}", self.seq_number().as_usize(), self.status())
     }
 }
 
@@ -302,6 +310,8 @@ impl Entry {
 mod test {
     use super::*;
     use crossbeam_epoch::{pin, Owned};
+    use rand::Rng;
+    use std::sync::Arc;
 
     #[test]
     fn test_mcas() {
@@ -330,5 +340,53 @@ mod test {
         }
 
         assert!(!succeeded);
+    }
+
+    #[test]
+    fn stress_test() {
+        let mut handles = Vec::new();
+        let iter = 8048;
+        let threads = 24;
+        let per_thread = iter / threads as u64;
+        let atomics = Arc::new((0..24000)
+            .map(|_| Atomic::new(0))
+            .collect::<Vec<_>>()
+            .into_boxed_slice());
+
+        for thread in 0..threads {
+            let atomics = atomics.clone();
+            let h = std::thread::spawn(move || {
+                let mut rng = rand::thread_rng();
+                let g = crossbeam_epoch::pin();
+                let new_first = crossbeam_epoch::Owned::new(thread as u32).into_shared(&g);
+                let new_second = crossbeam_epoch::Owned::new(thread as u32).into_shared(&g);
+                let mut num_succeeded = 0;
+                for _ in 0..per_thread {
+                    let first = rng.choose(&*atomics).unwrap();
+                    let first_current = first.load(&g);
+
+                    let second = rng.choose(&*atomics).unwrap();
+                    let second_current = second.load(&g);
+
+                    if cas2(
+                        first,
+                        second,
+                        first_current,
+                        second_current,
+                        new_first,
+                        new_second,
+                    ) {
+                        num_succeeded += 1;
+                    }
+                }
+                num_succeeded
+            });
+
+            handles.push(h);
+        }
+
+        for h in handles {
+            h.join().unwrap();
+        }
     }
 }
