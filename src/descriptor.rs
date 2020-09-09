@@ -56,7 +56,7 @@ impl MarkedPtr {
 
 impl<T> From<Shared<'_, T>> for MarkedPtr {
     fn from(s: Shared<'_, T>) -> Self {
-         MarkedPtr::from_usize(s.into_usize())
+        MarkedPtr::from_usize(s.into_usize())
     }
 }
 

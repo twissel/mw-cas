@@ -2,7 +2,7 @@ use crate::descriptor::{MarkedPtr, SeqNumberGenerator};
 use crate::mcas::{Cas2DescriptorStatus, Cas2DescriptorStatusCell};
 use crate::ptr::{AtomicMarkedPtr, PtrCell};
 use crate::thread_local::ThreadLocal;
-use crossbeam_utils::{CachePadded, Backoff};
+use crossbeam_utils::{Backoff, CachePadded};
 use once_cell::sync::Lazy;
 use std::sync::atomic::{AtomicPtr, Ordering};
 
@@ -186,13 +186,14 @@ pub fn is_marked(ptr: MarkedPtr) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /*
     use super::*;
     use crate::rdcss::RDCSSDescriptor;
     use crossbeam_epoch::pin;
 
     #[test]
     fn test_descriptor() {
-        /*let g = pin();
+        let g = pin();
         let atom = AtomicUsize::new(1000);
         let atom_exp = 1000;
         let rdcss_atom = AtomicUsize::new(10);
@@ -212,6 +213,7 @@ mod tests {
         rdcss_atom.store(11, Ordering::SeqCst);
         let swapped = des.rdcss(&atom, &rdcss_atom, atom_exp, rdcss_exp, rdcss_new);
         assert_ne!(swapped, rdcss_exp);
-        assert_ne!(11, rdcss_exp);*/
+        assert_ne!(11, rdcss_exp);
     }
+    */
 }

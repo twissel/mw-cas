@@ -8,7 +8,7 @@ use std::sync::Arc;
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-const ITER: u64 = 24 * 100_000;
+const ITER: u64 = 24 * 200_000;
 
 fn cas2_attemts(atomics: Arc<[Atomic<u32>; 2]>, threads: usize) -> [Atomic<u32>; 2] {
     let mut handles = Vec::new();
@@ -165,7 +165,7 @@ fn cas2_benchmark(c: &mut Criterion) {
                 )
             },
             |map| {
-                let m = cas2_random(map, 4);
+                let m = cas2_random(map, 24);
                 m
             },
             BatchSize::SmallInput,

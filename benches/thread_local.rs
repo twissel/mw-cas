@@ -1,4 +1,4 @@
-use criterion::{black_box, Criterion, criterion_group, criterion_main};
+use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use mw_cas::thread_local::{ThreadLocal, THREAD_ID};
 
 fn thread_local_get(c: &mut Criterion) {
@@ -11,9 +11,5 @@ fn thread_local_get(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(
-    benches,
-    thread_local_get
-);
+criterion_group!(benches, thread_local_get);
 criterion_main!(benches);
-

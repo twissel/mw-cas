@@ -53,7 +53,7 @@ impl<T> Atomic<T> {
 }
 
 struct Cas2Descriptor {
-    map: ThreadLocal<CachePadded<PerThreadCas2Descriptor>>,
+    map: ThreadLocal<CachePadded<ThreadCas2Descriptor>>,
 }
 
 impl Cas2Descriptor {
@@ -75,12 +75,23 @@ impl Cas2Descriptor {
     ) -> MarkedPtr {
         let (tid, per_thread_descriptor) = CAS2_DESCRIPTOR
             .map
-            .get_or_insert_with(|| CachePadded::new(PerThreadCas2Descriptor::empty()));
+            .get_or_insert_with(|| CachePadded::new(ThreadCas2Descriptor::empty()));
 
         // invalidate current descriptor
         per_thread_descriptor.inc_seq();
-
         // sort and store addresses
+        let entry0 = Entry {
+            addr: &addr0.data,
+            exp: exp0.into(),
+            new: new0.into(),
+        };
+
+        let entry1 = Entry {
+            addr: &addr1.data,
+            exp: exp1.into(),
+            new: new1.into(),
+        };
+
         let (addr0_entry, addr1_entry) =
             if addr0 as *const Atomic<T0> as usize <= addr1 as *const Atomic<T1> as usize {
                 (
@@ -93,13 +104,9 @@ impl Cas2Descriptor {
                     &per_thread_descriptor.entries[0],
                 )
             };
-        addr0_entry.addr.store(&addr0.data);
-        addr0_entry.exp.store(exp0.into());
-        addr0_entry.new.store(new0.into());
 
-        addr1_entry.addr.store(&addr1.data);
-        addr1_entry.exp.store(exp1.into());
-        addr1_entry.new.store(new1.into());
+        addr0_entry.store(entry0);
+        addr1_entry.store(entry1);
 
         // make descriptor fully initialized
         per_thread_descriptor.inc_seq();
@@ -109,104 +116,138 @@ impl Cas2Descriptor {
         MarkedPtr::new(tid, current_seq_num).with_mark(Self::MARK)
     }
 
-    pub fn cas2_help(&self, descriptor_ptr: MarkedPtr, help: bool) -> bool {
+    fn try_snapshot(&self, descriptor_ptr: MarkedPtr) -> Result<ThreadCas2DescriptorSnapshot, ()> {
+        let thread_descriptor = self.map.get_for_thread(descriptor_ptr.tid()).unwrap();
+        thread_descriptor.try_snapshot(descriptor_ptr.seq())
+    }
+
+    pub fn cas2_help(&self, descriptor_ptr: MarkedPtr, help_other: bool) -> bool {
         let descriptor_seq = descriptor_ptr.seq();
-        // load current descriptor
-        let descriptor = self
-            .map
-            .get_for_thread(descriptor_ptr.tid())
-            .expect("Missing thread  CAS2 descriptor");
 
-        // Phase 1: try to install descriptor in all entries
-        // Only if des has status == UNDECIDED && descriptor is still valid
-        let descriptor_current_status = descriptor.status.load();
-        if descriptor_seq == descriptor_current_status.seq_number()
-            && descriptor_current_status.status() == Cas2DescriptorStatus::UNDECIDED
-        {
-            let mut new_status = Cas2DescriptorStatus::succeeded(descriptor_seq);
-            let start = if help { 1 } else { 0 };
-            let backoff = Backoff::new();
-            'entry_loop: for entry in &descriptor.entries[start..] {
-                'install_loop: loop {
-                    let entry_addr = entry.addr.load();
-                    let entry_exp = entry.exp.load();
-                    let swapped = RDCSS_DESCRIPTOR.rdcss(
-                        &descriptor.status,
-                        entry_addr,
-                        descriptor_current_status,
-                        entry_exp,
-                        descriptor_ptr,
-                    );
-
-                    if swapped.mark() == Cas2Descriptor::MARK && swapped != descriptor_ptr {
-                        if backoff.is_completed() {
-                            self.cas2_help(swapped, true);
-                        } else {
-                            backoff.spin();
+        // try to snapshot descriptor we was helping
+        let descriptor_snapshot = self.try_snapshot(descriptor_ptr);
+        match descriptor_snapshot {
+            Ok(descriptor_snapshot) => {
+                // Phase 1: try to install descriptor in all entries
+                // Only if des has status == UNDECIDED
+                let descriptor_current_status =
+                    match descriptor_snapshot.try_read_status(descriptor_ptr) {
+                        Ok(status) => status,
+                        Err(()) => {
+                            assert!(help_other);
+                            return false;
                         }
-                        continue 'install_loop;
-                    } else {
-                        if swapped != entry_exp {
-                            new_status = new_status.set_failed();
-                            break 'entry_loop;
-                        } else {
-                            break 'install_loop;
+                    };
+                if descriptor_current_status.status() == Cas2DescriptorStatus::UNDECIDED {
+                    let mut new_status = Cas2DescriptorStatus::succeeded(descriptor_seq);
+                    let start = if help_other { 1 } else { 0 };
+                    let backoff = Backoff::new();
+                    'entry_loop: for entry in &descriptor_snapshot.entries[start..] {
+                        'install_loop: loop {
+                            let entry_addr = entry.addr;
+                            let entry_exp = entry.exp;
+                            let swapped = RDCSS_DESCRIPTOR.rdcss(
+                                &descriptor_snapshot.status,
+                                entry_addr,
+                                descriptor_current_status,
+                                entry_exp,
+                                descriptor_ptr,
+                            );
+
+                            if swapped.mark() == Cas2Descriptor::MARK && swapped != descriptor_ptr {
+                                if backoff.is_completed() {
+                                    self.cas2_help(swapped, true);
+                                } else {
+                                    backoff.spin();
+                                }
+                                continue 'install_loop;
+                            } else {
+                                if swapped != entry_exp {
+                                    new_status = new_status.set_failed();
+                                    break 'entry_loop;
+                                } else {
+                                    break 'install_loop;
+                                }
+                            }
                         }
                     }
+                    descriptor_snapshot.cas_status(descriptor_current_status, new_status);
                 }
-            }
-            let expected_status = descriptor_current_status;
-            let descriptor_current_status = descriptor.status.load();
-            if descriptor_current_status.status() == Cas2DescriptorStatus::UNDECIDED
-                && expected_status.seq_number() == descriptor_current_status.seq_number()
-            {
-                let _ = descriptor
-                    .status
-                    .compare_exchange(expected_status, new_status);
-            }
+                let descriptor_current_status =
+                    match descriptor_snapshot.try_read_status(descriptor_ptr) {
+                        Ok(status) => status,
+                        Err(()) => {
+                            assert!(help_other);
+                            return false;
+                        }
+                    };
 
-            // Phase 2.
-            let descriptor_current_status = descriptor.status.load();
-            let succeeded = descriptor_current_status.status() == Cas2DescriptorStatus::SUCCEEDED;
-            for entry in &descriptor.entries {
-                let addr = entry.addr.load();
-                let new = if succeeded {
-                    entry.new.load()
-                } else {
-                    entry.exp.load()
-                };
-                let descriptor_current_status = descriptor.status.load();
-                if descriptor_current_status.seq_number() == descriptor_seq {
-                    let _ = addr.compare_exchange(descriptor_ptr, new);
-                } else {
-                    // thread we was trying to help, already finished this operation, nothing to do
-                    return false;
+                let succeeded =
+                    descriptor_current_status.status() == Cas2DescriptorStatus::SUCCEEDED;
+                for entry in &descriptor_snapshot.entries {
+                    let new = if succeeded { entry.new } else { entry.exp };
+                    let _ = entry.addr.compare_exchange(descriptor_ptr, new);
                 }
+                succeeded
             }
-            succeeded
-        } else {
-            // thread we was trying to help, already finished this operation
-            false
+            Err(()) => false,
         }
     }
 }
 
-struct PerThreadCas2Descriptor {
-    pub entries: [Entry; 2],
+struct ThreadCas2Descriptor {
+    pub entries: [AtomicEntry; 2],
     pub status: Cas2DescriptorStatusCell,
 }
 
-impl PerThreadCas2Descriptor {
+impl ThreadCas2Descriptor {
     fn empty() -> Self {
         Self {
             status: Cas2DescriptorStatusCell::new(),
-            entries: [Entry::empty(), Entry::empty()],
+            entries: [AtomicEntry::empty(), AtomicEntry::empty()],
         }
     }
 
     fn inc_seq(&self) {
         let seq_num = self.status.load().seq_number().inc();
         self.status.store(Cas2DescriptorStatus::undecided(seq_num))
+    }
+
+    fn try_snapshot(&self, seq_num: SeqNumber) -> Result<ThreadCas2DescriptorSnapshot, ()> {
+        let current_seq_num = self.status.load().seq_number();
+        if current_seq_num == seq_num {
+            let entries = [self.entries[0].load(), self.entries[1].load()];
+            Ok(ThreadCas2DescriptorSnapshot {
+                entries,
+                status: &self.status,
+            })
+        } else {
+            Err(())
+        }
+    }
+}
+
+struct ThreadCas2DescriptorSnapshot<'a> {
+    entries: [Entry<'a>; 2],
+    status: &'a Cas2DescriptorStatusCell,
+}
+
+impl ThreadCas2DescriptorSnapshot<'_> {
+    fn try_read_status(&self, descriptor_ptr: MarkedPtr) -> Result<Cas2DescriptorStatus, ()> {
+        let status = self.status.load();
+        if status.seq_number() == descriptor_ptr.seq() {
+            Ok(status)
+        } else {
+            Err(())
+        }
+    }
+
+    fn cas_status(&self, expected_status: Cas2DescriptorStatus, new_status: Cas2DescriptorStatus) {
+        assert_eq!(expected_status.status(), Cas2DescriptorStatus::UNDECIDED);
+        let current_status = self.status.load();
+        if current_status == expected_status {
+            let _ = self.status.compare_exchange(expected_status, new_status);
+        }
     }
 }
 
@@ -286,24 +327,48 @@ impl Cas2DescriptorStatus {
 
 impl std::fmt::Debug for Cas2DescriptorStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Cas2DescriptorStatus seq_num = {}, status = {}", self.seq_number().as_usize(), self.status())
+        write!(
+            f,
+            "Cas2DescriptorStatus seq_num = {}, status = {}",
+            self.seq_number().as_usize(),
+            self.status()
+        )
     }
 }
 
-struct Entry {
+struct AtomicEntry {
     addr: PtrCell,
     exp: AtomicMarkedPtr,
     new: AtomicMarkedPtr,
 }
 
-impl Entry {
-    pub fn empty() -> Self {
+impl AtomicEntry {
+    fn empty() -> Self {
         Self {
             addr: PtrCell::empty(),
             exp: AtomicMarkedPtr::null(),
             new: AtomicMarkedPtr::null(),
         }
     }
+
+    fn load<'a>(&self) -> Entry<'a> {
+        let addr = self.addr.load();
+        let exp = self.exp.load();
+        let new = self.new.load();
+        Entry { addr, exp, new }
+    }
+
+    fn store(&self, e: Entry) {
+        self.addr.store(e.addr);
+        self.new.store(e.new);
+        self.exp.store(e.exp);
+    }
+}
+
+struct Entry<'a> {
+    addr: &'a AtomicMarkedPtr,
+    exp: MarkedPtr,
+    new: MarkedPtr,
 }
 
 #[cfg(test)]
@@ -324,6 +389,7 @@ mod test {
         let exp1 = atom1.load(&g);
         let new1 = Owned::new(1).into_shared(&g);
         let succeeded = cas2(&atom0, &atom1, exp0, exp1, new0, new1);
+        assert!(succeeded);
         let new0 = atom0.load(&g);
         let new1 = atom1.load(&g);
         unsafe {
@@ -336,7 +402,7 @@ mod test {
         let curr1 = atom0.load(&g);
         unsafe {
             assert_eq!(curr0.as_ref().unwrap(), &1);
-            assert_eq!(curr0.as_ref().unwrap(), &1);
+            assert_eq!(curr1.as_ref().unwrap(), &1);
         }
 
         assert!(!succeeded);
@@ -348,10 +414,12 @@ mod test {
         let iter = 8048;
         let threads = 24;
         let per_thread = iter / threads as u64;
-        let atomics = Arc::new((0..24000)
-            .map(|_| Atomic::new(0))
-            .collect::<Vec<_>>()
-            .into_boxed_slice());
+        let atomics = Arc::new(
+            (0..24000)
+                .map(|_| Atomic::new(0))
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+        );
 
         for thread in 0..threads {
             let atomics = atomics.clone();

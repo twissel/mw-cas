@@ -15,7 +15,6 @@ impl<V> ArrayOrKV<V> {
     }
 }
 
-
 pub struct Uint14HashMap<V> {
     array: [AtomicPtr<ArrayOrKV<V>>; 256],
 }

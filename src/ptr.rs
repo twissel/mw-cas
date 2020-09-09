@@ -19,7 +19,11 @@ impl AtomicMarkedPtr {
         self.0.store(ptr.into_usize(), Ordering::SeqCst);
     }
 
-    pub fn compare_exchange(&self, expected: MarkedPtr, new: MarkedPtr) -> Result<MarkedPtr, MarkedPtr> {
+    pub fn compare_exchange(
+        &self,
+        expected: MarkedPtr,
+        new: MarkedPtr,
+    ) -> Result<MarkedPtr, MarkedPtr> {
         let exchanged = self.0.compare_exchange(
             expected.into_usize(),
             new.into_usize(),
@@ -28,7 +32,7 @@ impl AtomicMarkedPtr {
         );
         match exchanged {
             Ok(new) => Ok(MarkedPtr::from_usize(new)),
-            Err(err) => Err(MarkedPtr::from_usize(err))
+            Err(err) => Err(MarkedPtr::from_usize(err)),
         }
     }
 }

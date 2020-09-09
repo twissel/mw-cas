@@ -4,8 +4,8 @@ pub(crate) mod descriptor;
 pub(crate) mod rdcss;
 
 //pub for benches
-pub  mod thread_local;
-pub (crate) mod ptr;
+pub(crate) mod ptr;
+pub mod thread_local;
 
 pub mod mcas;
 
