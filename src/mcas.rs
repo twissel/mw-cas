@@ -65,7 +65,7 @@ impl Cas2Descriptor {
     }
 
     pub fn make_descriptor<T0, T1>(
-        &self,
+        &'static self,
         addr0: &Atomic<T0>,
         addr1: &Atomic<T1>,
         exp0: Shared<'_, T0>,
@@ -116,12 +116,15 @@ impl Cas2Descriptor {
         MarkedPtr::new(tid, current_seq_num).with_mark(Self::MARK)
     }
 
-    fn try_snapshot(&self, descriptor_ptr: MarkedPtr) -> Result<ThreadCas2DescriptorSnapshot, ()> {
+    fn try_snapshot(
+        &'static self,
+        descriptor_ptr: MarkedPtr,
+    ) -> Result<ThreadCas2DescriptorSnapshot, ()> {
         let thread_descriptor = self.map.get_for_thread(descriptor_ptr.tid()).unwrap();
         thread_descriptor.try_snapshot(descriptor_ptr.seq())
     }
 
-    pub fn cas2_help(&self, descriptor_ptr: MarkedPtr, help_other: bool) -> bool {
+    pub fn cas2_help(&'static self, descriptor_ptr: MarkedPtr, help_other: bool) -> bool {
         let descriptor_seq = descriptor_ptr.seq();
 
         // try to snapshot descriptor we was helping
@@ -263,7 +266,7 @@ impl Cas2DescriptorStatusCell {
     }
 
     pub fn store(&self, status: Cas2DescriptorStatus) {
-        self.0.store(status.0, Ordering::Relaxed);
+        self.0.store(status.0, Ordering::SeqCst);
     }
 
     pub fn compare_exchange(
