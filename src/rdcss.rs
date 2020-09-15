@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicPtr, Ordering};
 
 pub(crate) static RDCSS_DESCRIPTOR: Lazy<RDCSSDescriptor> = Lazy::new(|| RDCSSDescriptor::new());
 
-struct PerThreadRDCSSDescriptor {
+struct ThreadRDCSSDescriptor {
     status_location_cell: AtomicPtr<Cas2DescriptorStatusCell>,
     data_location_cell: PtrCell,
     expected_status_cell: Cas2DescriptorStatusCell,
@@ -17,7 +17,7 @@ struct PerThreadRDCSSDescriptor {
     seq_number: SeqNumberGenerator,
 }
 
-impl PerThreadRDCSSDescriptor {
+impl ThreadRDCSSDescriptor {
     fn new() -> Self {
         Self {
             status_location_cell: AtomicPtr::default(),
@@ -29,7 +29,7 @@ impl PerThreadRDCSSDescriptor {
         }
     }
 
-    fn read_fields(&self) -> PerThreadsDescriptorFields {
+    fn snapshot(&self) -> ThreadRDCSSDescriptorSnapshot {
         unsafe {
             let status_location: *mut Cas2DescriptorStatusCell =
                 self.status_location_cell.load(Ordering::SeqCst);
@@ -37,7 +37,7 @@ impl PerThreadRDCSSDescriptor {
             let expected_status: Cas2DescriptorStatus = self.expected_status_cell.load();
             let expected_data_ptr = self.expected_ptr_cell.load();
             let kcas_ptr = self.kcas_ptr_cell.load();
-            PerThreadsDescriptorFields {
+            ThreadRDCSSDescriptorSnapshot {
                 status_location: &*status_location,
                 data_location,
                 expected_status,
@@ -48,8 +48,8 @@ impl PerThreadRDCSSDescriptor {
     }
 }
 
-struct PerThreadsDescriptorFields<'g> {
-    status_location: &'g Cas2DescriptorStatusCell,
+struct ThreadRDCSSDescriptorSnapshot<'g> {
+    status_location: &'static Cas2DescriptorStatusCell,
     data_location: &'g AtomicMarkedPtr,
     expected_status: Cas2DescriptorStatus,
     expected_data_ptr: MarkedPtr,
@@ -57,11 +57,12 @@ struct PerThreadsDescriptorFields<'g> {
 }
 
 pub struct RDCSSDescriptor {
-    per_thread_descriptors: ThreadLocal<CachePadded<PerThreadRDCSSDescriptor>>,
+    per_thread_descriptors: ThreadLocal<CachePadded<ThreadRDCSSDescriptor>>,
 }
 
 impl RDCSSDescriptor {
     pub const MARK: usize = 1;
+
     fn new() -> Self {
         Self {
             per_thread_descriptors: ThreadLocal::new(),
@@ -69,8 +70,8 @@ impl RDCSSDescriptor {
     }
 
     fn make_descriptor(
-        &self,
-        status_location: &Cas2DescriptorStatusCell,
+        &'static self,
+        status_location: &'static Cas2DescriptorStatusCell,
         data_location: &AtomicMarkedPtr,
         expected_status: Cas2DescriptorStatus,
         expected_data: MarkedPtr,
@@ -78,7 +79,7 @@ impl RDCSSDescriptor {
     ) -> MarkedPtr {
         let (thread_id, per_thread_descriptor) = self
             .per_thread_descriptors
-            .get_or_insert_with(|| CachePadded::new(PerThreadRDCSSDescriptor::new()));
+            .get_or_insert_with(|| CachePadded::new(ThreadRDCSSDescriptor::new()));
         per_thread_descriptor.seq_number.inc();
         per_thread_descriptor.status_location_cell.store(
             status_location as *const Cas2DescriptorStatusCell as *mut _,
@@ -99,8 +100,8 @@ impl RDCSSDescriptor {
     }
 
     pub(crate) fn rdcss(
-        &self,
-        status_location: &Cas2DescriptorStatusCell,
+        &'static self,
+        status_location: &'static Cas2DescriptorStatusCell,
         data_location: &AtomicMarkedPtr,
         expected_status: Cas2DescriptorStatus,
         expected_data_ptr: MarkedPtr,
@@ -136,20 +137,22 @@ impl RDCSSDescriptor {
     }
 
     fn rdcss_help(&self, des: MarkedPtr) {
-        let fields = self.read_fields(des);
-        if let Ok(fields) = fields {
-            let curr_status = fields.status_location.load();
-            if curr_status == fields.expected_status {
-                let _ = fields.data_location.compare_exchange(des, fields.kcas_ptr);
-            } else {
-                let _ = fields
+        let snapshot = self.try_snapshot(des);
+        if let Ok(snapshot) = snapshot {
+            let curr_status = snapshot.status_location.load();
+            if curr_status == snapshot.expected_status {
+                let _ = snapshot
                     .data_location
-                    .compare_exchange(des, fields.expected_data_ptr);
+                    .compare_exchange(des, snapshot.kcas_ptr);
+            } else {
+                let _ = snapshot
+                    .data_location
+                    .compare_exchange(des, snapshot.expected_data_ptr);
             }
         }
     }
 
-    fn read_fields(&self, des: MarkedPtr) -> Result<PerThreadsDescriptorFields, ()> {
+    fn try_snapshot(&self, des: MarkedPtr) -> Result<ThreadRDCSSDescriptorSnapshot, ()> {
         let tid = des.tid();
         let seq = des.seq();
         let curr_thread_descriptor = self
@@ -159,7 +162,7 @@ impl RDCSSDescriptor {
         if seq != curr_thread_descriptor.seq_number.current() {
             Err(())
         } else {
-            let fields = curr_thread_descriptor.read_fields();
+            let fields = curr_thread_descriptor.snapshot();
             if seq != curr_thread_descriptor.seq_number.current() {
                 Err(())
             } else {
