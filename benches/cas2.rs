@@ -23,14 +23,16 @@ fn cas2_attemts(atomics: Arc<[Atomic<u32>; 2]>, threads: usize) -> [Atomic<u32>;
             for _ in 0..per_thread {
                 let first = atomics[0].load(&g);
                 let second = atomics[1].load(&g);
-                if cas2(
-                    &atomics[0],
-                    &atomics[1],
-                    first,
-                    second,
-                    new_first,
-                    new_second,
-                ) {
+                if unsafe {
+                    cas2(
+                        &atomics[0],
+                        &atomics[1],
+                        first,
+                        second,
+                        new_first,
+                        new_second,
+                    )
+                } {
                     num_succeeded += 1;
                 }
             }
@@ -73,14 +75,16 @@ fn cas2_random(atomics: Arc<Box<[Atomic<u32>]>>, threads: usize) -> Box<[Atomic<
                 let second = rng.choose(&*atomics).unwrap();
                 let second_current = second.load(&g);
 
-                if cas2(
-                    first,
-                    second,
-                    first_current,
-                    second_current,
-                    new_first,
-                    new_second,
-                ) {
+                if unsafe {
+                    cas2(
+                        first,
+                        second,
+                        first_current,
+                        second_current,
+                        new_first,
+                        new_second,
+                    )
+                } {
                     num_succeeded += 1;
                 }
             }

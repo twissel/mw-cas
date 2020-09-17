@@ -19,7 +19,7 @@ pub struct Atomic<T> {
 unsafe impl<T: Send + Sync> Send for Atomic<T> {}
 unsafe impl<T: Send + Sync> Sync for Atomic<T> {}
 
-pub fn cas2<T0, T1>(
+pub unsafe fn cas2<T0, T1>(
     addr0: &Atomic<T0>,
     addr1: &Atomic<T1>,
     exp0: Shared<'_, T0>,
@@ -391,7 +391,7 @@ mod test {
         let atom1 = Atomic::new(0);
         let exp1 = atom1.load(&g);
         let new1 = Owned::new(1).into_shared(&g);
-        let succeeded = cas2(&atom0, &atom1, exp0, exp1, new0, new1);
+        let succeeded = unsafe { cas2(&atom0, &atom1, exp0, exp1, new0, new1) };
         assert!(succeeded);
         let new0 = atom0.load(&g);
         let new1 = atom1.load(&g);
@@ -400,7 +400,7 @@ mod test {
             assert_eq!(new1.as_ref().unwrap(), &1);
         }
 
-        let succeeded = cas2(&atom0, &atom1, exp0, exp1, new0, new1);
+        let succeeded = unsafe { cas2(&atom0, &atom1, exp0, exp1, new0, new1) };
         let curr0 = atom0.load(&g);
         let curr1 = atom0.load(&g);
         unsafe {
@@ -439,14 +439,16 @@ mod test {
                     let second = rng.choose(&*atomics).unwrap();
                     let second_current = second.load(&g);
 
-                    if cas2(
-                        first,
-                        second,
-                        first_current,
-                        second_current,
-                        new_first,
-                        new_second,
-                    ) {
+                    if unsafe {
+                        cas2(
+                            first,
+                            second,
+                            first_current,
+                            second_current,
+                            new_first,
+                            new_second,
+                        )
+                    } {
                         num_succeeded += 1;
                     }
                 }
