@@ -46,6 +46,7 @@ where
             map: Uint14HashMap::new(),
         }
     }
+
     pub fn get(&self) -> Option<&V> {
         let id = THREAD_ID.with(|id| id.0);
 

@@ -1,13 +1,13 @@
-//#![cfg(target_pointer_width = "64")]
+#![cfg(target_pointer_width = "64")]
 
-pub(crate) mod descriptor;
 pub(crate) mod rdcss;
 
-//pub for benches
-pub(crate) mod ptr;
-pub mod thread_local;
+mod ptr;
+mod thread_local;
 
-pub mod mcas;
+mod mcas;
+
+pub use mcas::{Atomic, cas2};
 
 #[cfg(test)]
 mod tests {

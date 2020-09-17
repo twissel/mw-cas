@@ -24,9 +24,5 @@ debug = true
 
 
 [[bench]]
-name = "thread_local"
-harness = false
-
-[[bench]]
 name = "cas2"
 harness = false

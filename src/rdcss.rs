@@ -1,4 +1,4 @@
-use crate::descriptor::{MarkedPtr, SeqNumberGenerator};
+use crate::ptr::{MarkedPtr, SeqNumberGenerator};
 use crate::mcas::{Cas2DescriptorStatus, Cas2DescriptorStatusCell};
 use crate::ptr::{AtomicMarkedPtr, PtrCell};
 use crate::thread_local::ThreadLocal;

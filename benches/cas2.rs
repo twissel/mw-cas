@@ -8,7 +8,7 @@ use std::sync::Arc;
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-const ITER: u64 = 24 * 200_000;
+const ITER: u64 = 24 * 100_000;
 
 fn cas2_attemts(atomics: Arc<[Atomic<u32>; 2]>, threads: usize) -> [Atomic<u32>; 2] {
     let mut handles = Vec::new();
@@ -115,13 +115,13 @@ fn cas_attemts(atomics: Arc<[AtomicPtr<u32>; 2]>, threads: usize) -> [AtomicPtr<
             for _ in 0..per_thread {
                 let curr_first = atoms[0].load(Ordering::SeqCst);
                 let curr_second = atoms[0].load(Ordering::SeqCst);
-                atoms[0].compare_exchange(
+                let _ = atoms[0].compare_exchange(
                     curr_first,
                     desired_first,
                     Ordering::SeqCst,
                     Ordering::SeqCst,
                 );
-                atoms[1].compare_exchange(
+                let _ = atoms[1].compare_exchange(
                     curr_second,
                     desired_second,
                     Ordering::SeqCst,
@@ -147,7 +147,7 @@ fn cas2_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("cas2");
     group.throughput(Throughput::Elements(ITER as u64));
 
-    /*group.bench_function("cas2", |b| {
+    group.bench_function("cas2", |b| {
         b.iter_batched(
             || Arc::new([Atomic::new(0), Atomic::new(0)]),
             |map| {
@@ -156,7 +156,7 @@ fn cas2_benchmark(c: &mut Criterion) {
             },
             BatchSize::SmallInput,
         )
-    });*/
+    });
 
     group.bench_function("cas2_random", |b| {
         b.iter_batched(
@@ -176,16 +176,6 @@ fn cas2_benchmark(c: &mut Criterion) {
         )
     });
 
-    /*group.bench_function("native_cas", |b| {
-        b.iter_batched(
-            || Arc::new([AtomicPtr::default(), AtomicPtr::default()]),
-            |atom| {
-                let m = cas_attemts(atom, 24);
-                m
-            },
-            BatchSize::SmallInput,
-        )
-    });*/
     group.finish();
 }
 
