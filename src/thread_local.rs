@@ -47,6 +47,7 @@ where
         }
     }
 
+    #[allow(dead_code)]
     pub fn get(&self) -> Option<&V> {
         let id = THREAD_ID.with(|id| id.0);
 

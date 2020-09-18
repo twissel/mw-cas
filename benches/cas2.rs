@@ -1,6 +1,9 @@
+#![allow(unused_imports)]
+#![allow(dead_code)]
+
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion, Throughput};
-use crossbeam_epoch;
-use mw_cas::mcas::{cas2, Atomic};
+use crossbeam_epoch::{self, Owned};
+use mw_cas::{cas2, Atomic};
 use rand::{Rng, SeedableRng};
 use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::Arc;
@@ -53,6 +56,65 @@ fn cas2_attemts(atomics: Arc<[Atomic<u32>; 2]>, threads: usize) -> [Atomic<u32>;
         Ok(a) => a,
         Err(_) => panic!("failed to unwrap"),
     }
+}
+
+fn cas2_random2(atomics: Arc<Box<[Atomic<u32>]>>, els: Vec<Vec<Owned<u32>>>) -> Box<[Atomic<u32>]> {
+    let mut handles = Vec::new();
+    for (thread, mut els) in els.into_iter().enumerate() {
+        let atomics = atomics.clone();
+        let h = std::thread::spawn(move || {
+            let s = thread as u32;
+            let seed = [s + 1, s + 2, s + 3, s + 4];
+            let mut rng = rand::XorShiftRng::from_seed(seed);
+            let mut num_succeeded = 0;
+            loop {
+                let g = crossbeam_epoch::pin();
+                let new = els.pop().and_then(|f| els.pop().map(|s| (f, s)));
+                let (new_first, new_second) = match new {
+                    Some((f, s)) => (f.into_shared(&g), s.into_shared(&g)),
+                    None => break,
+                };
+
+                unsafe {
+                    let first = rng.choose(&*atomics).unwrap();
+                    let first_current_shared = first.load(&g);
+
+                    let second = rng.choose(&*atomics).unwrap();
+                    let second_current_shared = second.load(&g);
+
+                    if cas2(
+                        first,
+                        second,
+                        first_current_shared,
+                        second_current_shared,
+                        new_first,
+                        new_second,
+                    ) {
+                        g.defer_destroy(first_current_shared);
+                        g.defer_destroy(second_current_shared);
+                        num_succeeded += 1;
+                    } else {
+                        new_first.into_owned();
+                        new_second.into_owned();
+                    }
+                }
+            }
+            num_succeeded
+        });
+
+        handles.push(h);
+    }
+
+    let mut total_succeeded = 0;
+    for h in handles {
+        total_succeeded += h.join().unwrap();
+    }
+    assert!(total_succeeded > 0);
+    let r = match Arc::try_unwrap(atomics) {
+        Ok(a) => a,
+        Err(_) => panic!("failed to unwrap"),
+    };
+    r
 }
 
 fn cas2_random(atomics: Arc<Box<[Atomic<u32>]>>, threads: usize) -> Box<[Atomic<u32>]> {

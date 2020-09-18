@@ -100,6 +100,10 @@ impl AtomicMarkedPtr {
         Self(AtomicUsize::new(ptr))
     }
 
+    pub fn into_inner(self) -> usize {
+        self.0.into_inner()
+    }
+
     pub fn load(&self) -> MarkedPtr {
         MarkedPtr::from_usize(self.0.load(Ordering::SeqCst))
     }
@@ -142,7 +146,6 @@ impl PtrCell {
         unsafe { &*ptr }
     }
 }
-
 
 #[cfg(test)]
 mod tests {

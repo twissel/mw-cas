@@ -7,7 +7,7 @@ mod thread_local;
 
 mod mcas;
 
-pub use mcas::{Atomic, cas2};
+pub use mcas::{cas2, Atomic};
 
 #[cfg(test)]
 mod tests {

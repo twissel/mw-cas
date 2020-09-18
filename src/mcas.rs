@@ -1,8 +1,8 @@
-use crate::ptr::{MarkedPtr, SeqNumber};
 use crate::ptr::{AtomicMarkedPtr, PtrCell};
+use crate::ptr::{MarkedPtr, SeqNumber};
 use crate::rdcss::RDCSS_DESCRIPTOR;
 use crate::thread_local::ThreadLocal;
-use crossbeam_epoch::{Guard, Pointer, Shared};
+use crossbeam_epoch::{Guard, Owned, Pointer, Shared};
 use crossbeam_utils::{Backoff, CachePadded};
 use once_cell::sync::Lazy;
 use std::marker::PhantomData;
@@ -35,6 +35,10 @@ impl<T> Atomic<T> {
             }
         }
     }
+
+    pub unsafe fn into_owned(self) -> Owned<T> {
+        Owned::from_usize(self.data.into_inner())
+    }
 }
 
 unsafe impl<T: Send + Sync> Send for Atomic<T> {}
@@ -51,8 +55,6 @@ pub unsafe fn cas2<T0, T1>(
     let descriptor_ptr = CAS2_DESCRIPTOR.make_descriptor(addr0, addr1, exp0, exp1, new0, new1);
     CAS2_DESCRIPTOR.cas2_help(descriptor_ptr, false)
 }
-
-
 
 struct Cas2Descriptor {
     map: ThreadLocal<CachePadded<ThreadCas2Descriptor>>,
@@ -199,7 +201,7 @@ impl Cas2Descriptor {
                 assert!(help_other);
                 // nothing to do, thread we was trying to help, already finished this operation.
                 false
-            },
+            }
         }
     }
 }
@@ -384,7 +386,6 @@ struct Entry<'a> {
 mod test {
     use super::*;
     use crossbeam_epoch::{pin, Owned};
-    use rand::Rng;
     use std::sync::Arc;
 
     #[test]
@@ -418,47 +419,41 @@ mod test {
     }
 
     #[test]
-    fn stress_test() {
+    fn counter_test() {
         let mut handles = Vec::new();
-        let iter = 8048;
-        let threads = 24;
-        let per_thread = iter / threads as u64;
-        let atomics = Arc::new(
-            (0..24000)
-                .map(|_| Atomic::new(0))
-                .collect::<Vec<_>>()
-                .into_boxed_slice(),
-        );
+        let counter = Arc::new((Atomic::new(0), Atomic::new(0)));
+        let max = 100_000;
+        for _ in 0..8 {
+            let counter = counter.clone();
+            let h = std::thread::spawn(move || loop {
+                unsafe {
+                    let g = crossbeam_epoch::pin();
+                    let curr_first_shared = counter.0.load(&g);
+                    let curr_second_shared = counter.1.load(&g);
+                    let curr_first = curr_first_shared.deref();
+                    let curr_second = curr_second_shared.deref();
+                    if *curr_first == max {
+                        break;
+                    }
 
-        for thread in 0..threads {
-            let atomics = atomics.clone();
-            let h = std::thread::spawn(move || {
-                let mut rng = rand::thread_rng();
-                let g = crossbeam_epoch::pin();
-                let new_first = crossbeam_epoch::Owned::new(thread as u32).into_shared(&g);
-                let new_second = crossbeam_epoch::Owned::new(thread as u32).into_shared(&g);
-                let mut num_succeeded = 0;
-                for _ in 0..per_thread {
-                    let first = rng.choose(&*atomics).unwrap();
-                    let first_current = first.load(&g);
+                    let new_first = Owned::new(*curr_first + 1).into_shared(&g);
+                    let new_second = Owned::new(*curr_second + 1).into_shared(&g);
 
-                    let second = rng.choose(&*atomics).unwrap();
-                    let second_current = second.load(&g);
-
-                    if unsafe {
-                        cas2(
-                            first,
-                            second,
-                            first_current,
-                            second_current,
-                            new_first,
-                            new_second,
-                        )
-                    } {
-                        num_succeeded += 1;
+                    if cas2(
+                        &counter.0,
+                        &counter.1,
+                        curr_first_shared,
+                        curr_second_shared,
+                        new_first,
+                        new_second,
+                    ) {
+                        g.defer_destroy(curr_first_shared);
+                        g.defer_destroy(curr_second_shared);
+                    } else {
+                        new_first.into_owned();
+                        new_second.into_owned();
                     }
                 }
-                num_succeeded
             });
 
             handles.push(h);
@@ -466,6 +461,18 @@ mod test {
 
         for h in handles {
             h.join().unwrap();
+        }
+
+        let counter = match Arc::try_unwrap(counter) {
+            Ok(c) => c,
+            Err(_) => panic!(),
+        };
+        unsafe {
+            let first = counter.0.into_owned();
+            assert_eq!(*first, max);
+
+            let second = counter.1.into_owned();
+            assert_eq!(*second, max);
         }
     }
 }

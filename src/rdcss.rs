@@ -1,6 +1,6 @@
-use crate::ptr::{MarkedPtr, SeqNumberGenerator};
 use crate::mcas::{Cas2DescriptorStatus, Cas2DescriptorStatusCell};
 use crate::ptr::{AtomicMarkedPtr, PtrCell};
+use crate::ptr::{MarkedPtr, SeqNumberGenerator};
 use crate::thread_local::ThreadLocal;
 use crossbeam_utils::{Backoff, CachePadded};
 use once_cell::sync::Lazy;
