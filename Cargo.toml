@@ -17,7 +17,7 @@ crossbeam-utils = "0.7.2"
 criterion = "0.3"
 rayon = "1.4.0"
 mimalloc = { version = "0.1", default-features = false }
-rand = "0.3"
+rand = { version = "0.7",  features = ["small_rng"] }
 
 [profile.release]
 debug = true
