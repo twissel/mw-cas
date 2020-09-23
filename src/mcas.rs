@@ -97,7 +97,7 @@ impl Cas2Descriptor {
         };
 
         let (addr0_entry, addr1_entry) =
-            if addr0 as *const Atomic<T0> as usize <= addr1 as *const Atomic<T1> as usize {
+            if addr0 as *const Atomic<T0> as *const () <= addr1 as *const Atomic<T1> as *const () {
                 (
                     &per_thread_descriptor.entries[0],
                     &per_thread_descriptor.entries[1],
