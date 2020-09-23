@@ -132,6 +132,8 @@ impl RDCSSDescriptor {
             if let Ok(_) = installed {
                 self.rdcss_help(des_ptr);
                 return expected_data_ptr;
+            } else {
+                backoff.reset();
             }
         }
     }

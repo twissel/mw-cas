@@ -58,7 +58,10 @@ fn cas2_attemts(atomics: Arc<[Atomic<u32>; 2]>, threads: usize) -> [Atomic<u32>;
     }
 }
 
-fn cas2_random2(atomics: Arc<Box<[Atomic<u32>]>>, els: Vec<Vec<Owned<u32>>>) -> Box<[Atomic<u32>]> {
+fn cas2_array_alloc(
+    atomics: Arc<Box<[Atomic<u32>]>>,
+    els: Vec<Vec<Owned<u32>>>,
+) -> Box<[Atomic<u32>]> {
     let mut handles = Vec::new();
     for (thread, mut els) in els.into_iter().enumerate() {
         let atomics = atomics.clone();
@@ -117,7 +120,7 @@ fn cas2_random2(atomics: Arc<Box<[Atomic<u32>]>>, els: Vec<Vec<Owned<u32>>>) -> 
     r
 }
 
-fn cas2_random(atomics: Arc<Box<[Atomic<u32>]>>, threads: usize) -> Box<[Atomic<u32>]> {
+fn cas2_array(atomics: Arc<Box<[Atomic<u32>]>>, threads: usize) -> Box<[Atomic<u32>]> {
     let mut handles = Vec::new();
     let per_thread = ITER / threads as u64;
     for thread in 0..threads {
@@ -125,12 +128,13 @@ fn cas2_random(atomics: Arc<Box<[Atomic<u32>]>>, threads: usize) -> Box<[Atomic<
         let h = std::thread::spawn(move || {
             let s = thread as u32;
             let seed = [s + 1, s + 2, s + 3, s + 4];
-            let mut rng = rand::XorShiftRng::from_seed(seed);
             let g = crossbeam_epoch::pin();
+            let mut rng = rand::XorShiftRng::from_seed(seed);
             let new_first = crossbeam_epoch::Owned::new(thread as u32).into_shared(&g);
             let new_second = crossbeam_epoch::Owned::new(thread as u32).into_shared(&g);
             let mut num_succeeded = 0;
             for _ in 0..per_thread {
+                let g = crossbeam_epoch::pin();
                 let first = rng.choose(&*atomics).unwrap();
                 let first_current = first.load(&g);
 
@@ -166,61 +170,12 @@ fn cas2_random(atomics: Arc<Box<[Atomic<u32>]>>, threads: usize) -> Box<[Atomic<
     }
 }
 
-fn cas_attemts(atomics: Arc<[AtomicPtr<u32>; 2]>, threads: usize) -> [AtomicPtr<u32>; 2] {
-    let per_thread = ITER / threads as u64;
-    let mut handles = Vec::new();
-    for thread in 0..threads {
-        let atoms = atomics.clone();
-        let h = std::thread::spawn(move || {
-            let desired_first = Box::into_raw(Box::new(thread as u32));
-            let desired_second = Box::into_raw(Box::new(thread as u32));
-            for _ in 0..per_thread {
-                let curr_first = atoms[0].load(Ordering::SeqCst);
-                let curr_second = atoms[0].load(Ordering::SeqCst);
-                let _ = atoms[0].compare_exchange(
-                    curr_first,
-                    desired_first,
-                    Ordering::SeqCst,
-                    Ordering::SeqCst,
-                );
-                let _ = atoms[1].compare_exchange(
-                    curr_second,
-                    desired_second,
-                    Ordering::SeqCst,
-                    Ordering::SeqCst,
-                );
-            }
-        });
-
-        handles.push(h);
-    }
-
-    for h in handles {
-        h.join().unwrap();
-    }
-
-    match Arc::try_unwrap(atomics) {
-        Ok(a) => a,
-        Err(_) => panic!("failed to unwrap"),
-    }
-}
-
 fn cas2_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("cas2");
-    group.throughput(Throughput::Elements(ITER as u64));
-
-    group.bench_function("cas2", |b| {
-        b.iter_batched(
-            || Arc::new([Atomic::new(0), Atomic::new(0)]),
-            |map| {
-                let m = cas2_attemts(map, 24);
-                m
-            },
-            BatchSize::SmallInput,
-        )
-    });
-
-    group.bench_function("cas2_random", |b| {
+    let num_threads = 24;
+    let per_thread = 50000;
+    group.throughput(Throughput::Elements(num_threads * per_thread));
+    group.bench_function("cas2_sum", |b| {
         b.iter_batched(
             || {
                 Arc::new(
@@ -231,14 +186,133 @@ fn cas2_benchmark(c: &mut Criterion) {
                 )
             },
             |map| {
-                let m = cas2_random(map, 24);
+                let m = cas2_sum(map, num_threads as usize, per_thread as usize);
+                m
+            },
+            BatchSize::LargeInput,
+        )
+    });
+
+    /*group.bench_function("cas2", |b| {
+        b.iter_batched(
+            || Arc::new([Atomic::new(0), Atomic::new(0)]),
+            |map| {
+                let m = cas2_attemts(map, 24);
+                m
+            },
+            BatchSize::SmallInput,
+        )
+    });*/
+
+    /*group.bench_function("cas2_array", |b| {
+        b.iter_batched(
+            || {
+                Arc::new(
+                    (0..24000)
+                        .map(|_| Atomic::new(0))
+                        .collect::<Vec<_>>()
+                        .into_boxed_slice(),
+                )
+            },
+            |map| {
+                let m = cas2_array(map, 24);
                 m
             },
             BatchSize::SmallInput,
         )
     });
 
+    group.bench_function("cas2_prealloc_array", |b| {
+        b.iter_batched(
+            || {
+                let atoms = Arc::new(
+                    (0..24000)
+                        .map(|_| Atomic::new(0))
+                        .collect::<Vec<_>>()
+                        .into_boxed_slice(),
+                );
+                let els = (0..24)
+                    .map(|_| (0..50000).map(|e| Owned::new(e)).collect())
+                    .collect();
+                (atoms, els)
+            },
+            |(atoms, els)| cas2_array_alloc(atoms, els),
+            BatchSize::SmallInput,
+        )
+    });*/
+
     group.finish();
+}
+
+fn cas2_sum(
+    atomics: Arc<Box<[Atomic<u32>]>>,
+    threads: usize,
+    per_thread: usize,
+) -> Box<[Atomic<u32>]> {
+    let mut handles = Vec::new();
+    for thread in 0..threads {
+        let atomics = atomics.clone();
+        let h = std::thread::spawn(move || {
+            let s = thread as u32;
+            let seed = [s + 1, s + 2, s + 3, s + 4];
+            let mut rng = rand::XorShiftRng::from_seed(seed);
+            let mut num_succeeded = 0;
+            for _ in 0..per_thread {
+                unsafe {
+                    let g = crossbeam_epoch::pin();
+                    let first = rng.choose(&*atomics).unwrap();
+                    let first_current = first.load(&g);
+                    let new_first = Atomic::new(*first_current.deref() + 1)
+                        .into_owned()
+                        .into_shared(&g);
+
+                    let second = rng.choose(&*atomics).unwrap();
+                    let second_current = second.load(&g);
+                    let new_second = Atomic::new(*second_current.deref() + 1)
+                        .into_owned()
+                        .into_shared(&g);
+                    let succeeded = cas2(
+                        first,
+                        second,
+                        first_current,
+                        second_current,
+                        new_first,
+                        new_second,
+                    );
+
+                    if succeeded {
+                        g.defer_destroy(first_current);
+                        g.defer_destroy(second_current);
+                        num_succeeded += 1;
+                    } else {
+                        new_first.into_owned();
+                        new_second.into_owned();
+                    }
+                }
+            }
+
+            num_succeeded
+        });
+
+        handles.push(h);
+    }
+
+    let total_succeeded: usize = handles.into_iter().map(|h| h.join().unwrap()).sum();
+    match Arc::try_unwrap(atomics) {
+        Ok(a) => {
+            let g = crossbeam_epoch::pin();
+            let sum: usize = a
+                .iter()
+                .map(|el| {
+                    let v = unsafe { el.load(&g).deref() };
+                    *v as usize
+                })
+                .sum();
+            assert_eq!(sum, total_succeeded * 2);
+            a
+        }
+        Err(_) => panic!("failed to unwrap"),
+    }
 }
 
 criterion_group!(benches, cas2_benchmark);
