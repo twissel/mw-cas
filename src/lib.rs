@@ -5,14 +5,6 @@ pub(crate) mod rdcss;
 mod ptr;
 mod thread_local;
 
-mod mcas;
+mod mwcas;
 
-pub use mcas::{cas2, Atomic};
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn it_works() {
-        assert_eq!(2 + 2, 4);
-    }
-}
+pub use mwcas::{cas2, cas_n, Atomic};

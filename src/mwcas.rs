@@ -53,7 +53,41 @@ pub unsafe fn cas2<T0, T1>(
     new0: Shared<'_, T0>,
     new1: Shared<'_, T1>,
 ) -> bool {
-    let descriptor_ptr = CAS2_DESCRIPTOR.make_cas2_descriptor(addr0, addr1, exp0, exp1, new0, new1);
+    let entry0 = Entry {
+        addr: &addr0.data,
+        exp: exp0.into(),
+        new: new0.into(),
+    };
+
+    let entry1 = Entry {
+        addr: &addr1.data,
+        exp: exp1.into(),
+        new: new1.into(),
+    };
+
+    let mut entries = [entry0, entry1];
+    let descriptor_ptr = CAS2_DESCRIPTOR.make_descriptor(&mut entries);
+    CAS2_DESCRIPTOR.cas2_help(descriptor_ptr, false)
+}
+
+pub unsafe fn cas_n<T>(
+    addresses: &[Atomic<T>],
+    expected: &[Shared<'_, T>],
+    new: &[Shared<'_, T>],
+) -> bool {
+    assert_eq!(addresses.len(), expected.len());
+    assert_eq!(expected.len(), new.len());
+    assert!(addresses.len() <= MAX_ENTRIES);
+    let mut entries = ArrayVec::<[Entry<'_>; MAX_ENTRIES]>::new();
+    for ((addr, exp), new) in addresses.iter().zip(expected).zip(new) {
+        let entry = Entry {
+            addr: &addr.data,
+            exp: (*exp).into(),
+            new: (*new).into(),
+        };
+        entries.push(entry);
+    }
+    let descriptor_ptr = CAS2_DESCRIPTOR.make_descriptor(&mut entries);
     CAS2_DESCRIPTOR.cas2_help(descriptor_ptr, false)
 }
 
@@ -69,15 +103,7 @@ impl Cas2Descriptor {
         }
     }
 
-    pub fn make_cas2_descriptor<T0, T1>(
-        &'static self,
-        addr0: &Atomic<T0>,
-        addr1: &Atomic<T1>,
-        exp0: Shared<'_, T0>,
-        exp1: Shared<'_, T1>,
-        new0: Shared<'_, T0>,
-        new1: Shared<'_, T1>,
-    ) -> MarkedPtr {
+    pub fn make_descriptor(&'static self, entries: &mut [Entry]) -> MarkedPtr {
         let (tid, per_thread_descriptor) = CAS2_DESCRIPTOR
             .map
             .get_or_insert_with(|| CachePadded::new(ThreadCas2Descriptor::empty()));
@@ -85,20 +111,7 @@ impl Cas2Descriptor {
         // invalidate current descriptor
         per_thread_descriptor.inc_seq();
         // sort and store addresses
-        let entry0 = Entry {
-            addr: &addr0.data,
-            exp: exp0.into(),
-            new: new0.into(),
-        };
-
-        let entry1 = Entry {
-            addr: &addr1.data,
-            exp: exp1.into(),
-            new: new1.into(),
-        };
-
-        let mut entries = [entry0, entry1];
-        per_thread_descriptor.store_entries(&mut entries);
+        per_thread_descriptor.store_entries(entries);
         // make descriptor fully initialized
         per_thread_descriptor.inc_seq();
         let current_seq_num = per_thread_descriptor.status.load().seq_number();
