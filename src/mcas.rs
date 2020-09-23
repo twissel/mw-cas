@@ -2,6 +2,7 @@ use crate::ptr::{AtomicMarkedPtr, PtrCell};
 use crate::ptr::{MarkedPtr, SeqNumber};
 use crate::rdcss::RDCSS_DESCRIPTOR;
 use crate::thread_local::ThreadLocal;
+use arrayvec::ArrayVec;
 use crossbeam_epoch::{Guard, Owned, Pointer, Shared};
 use crossbeam_utils::{Backoff, CachePadded};
 use once_cell::sync::Lazy;
@@ -52,7 +53,7 @@ pub unsafe fn cas2<T0, T1>(
     new0: Shared<'_, T0>,
     new1: Shared<'_, T1>,
 ) -> bool {
-    let descriptor_ptr = CAS2_DESCRIPTOR.make_descriptor(addr0, addr1, exp0, exp1, new0, new1);
+    let descriptor_ptr = CAS2_DESCRIPTOR.make_cas2_descriptor(addr0, addr1, exp0, exp1, new0, new1);
     CAS2_DESCRIPTOR.cas2_help(descriptor_ptr, false)
 }
 
@@ -68,7 +69,7 @@ impl Cas2Descriptor {
         }
     }
 
-    pub fn make_descriptor<T0, T1>(
+    pub fn make_cas2_descriptor<T0, T1>(
         &'static self,
         addr0: &Atomic<T0>,
         addr1: &Atomic<T1>,
@@ -96,22 +97,8 @@ impl Cas2Descriptor {
             new: new1.into(),
         };
 
-        let (addr0_entry, addr1_entry) =
-            if addr0 as *const Atomic<T0> as *const () <= addr1 as *const Atomic<T1> as *const () {
-                (
-                    &per_thread_descriptor.entries[0],
-                    &per_thread_descriptor.entries[1],
-                )
-            } else {
-                (
-                    &per_thread_descriptor.entries[1],
-                    &per_thread_descriptor.entries[0],
-                )
-            };
-
-        addr0_entry.store(entry0);
-        addr1_entry.store(entry1);
-
+        let mut entries = [entry0, entry1];
+        per_thread_descriptor.store_entries(&mut entries);
         // make descriptor fully initialized
         per_thread_descriptor.inc_seq();
         let current_seq_num = per_thread_descriptor.status.load().seq_number();
@@ -206,8 +193,11 @@ impl Cas2Descriptor {
     }
 }
 
+const MAX_ENTRIES: usize = 8;
+
 struct ThreadCas2Descriptor {
-    pub entries: [AtomicEntry; 2],
+    pub entries: [AtomicEntry; MAX_ENTRIES],
+    pub num_entries: AtomicUsize,
     pub status: Cas2DescriptorStatusCell,
 }
 
@@ -215,7 +205,17 @@ impl ThreadCas2Descriptor {
     fn empty() -> Self {
         Self {
             status: Cas2DescriptorStatusCell::new(),
-            entries: [AtomicEntry::empty(), AtomicEntry::empty()],
+            num_entries: AtomicUsize::new(0),
+            entries: [
+                AtomicEntry::empty(),
+                AtomicEntry::empty(),
+                AtomicEntry::empty(),
+                AtomicEntry::empty(),
+                AtomicEntry::empty(),
+                AtomicEntry::empty(),
+                AtomicEntry::empty(),
+                AtomicEntry::empty(),
+            ],
         }
     }
 
@@ -227,19 +227,38 @@ impl ThreadCas2Descriptor {
     fn try_snapshot(&self, seq_num: SeqNumber) -> Result<ThreadCas2DescriptorSnapshot, ()> {
         let current_seq_num = self.status.load().seq_number();
         if current_seq_num == seq_num {
-            let entries = [self.entries[0].load(), self.entries[1].load()];
-            Ok(ThreadCas2DescriptorSnapshot {
-                entries,
-                status: &self.status,
-            })
+            let num_entries = self.num_entries.load(Ordering::SeqCst);
+
+            assert!(num_entries >= 2);
+            let entries = self.entries[0..num_entries]
+                .iter()
+                .map(|atomic_entry| atomic_entry.load())
+                .collect();
+
+            if seq_num == self.status.load().seq_number() {
+                Ok(ThreadCas2DescriptorSnapshot {
+                    entries,
+                    status: &self.status,
+                })
+            } else {
+                Err(())
+            }
         } else {
             Err(())
         }
     }
+
+    fn store_entries(&self, entries: &mut [Entry<'_>]) {
+        entries.sort_by_key(|e| e.addr as *const AtomicMarkedPtr);
+        for (atomic_entry, entry) in self.entries.iter().zip(&*entries) {
+            atomic_entry.store(entry);
+        }
+        self.num_entries.store(entries.len(), Ordering::SeqCst);
+    }
 }
 
 struct ThreadCas2DescriptorSnapshot<'a> {
-    entries: [Entry<'a>; 2],
+    entries: ArrayVec<[Entry<'a>; MAX_ENTRIES]>,
     status: &'a Cas2DescriptorStatusCell,
 }
 
@@ -369,7 +388,7 @@ impl AtomicEntry {
         Entry { addr, exp, new }
     }
 
-    fn store(&self, e: Entry) {
+    fn store(&self, e: &Entry) {
         self.addr.store(e.addr);
         self.new.store(e.new);
         self.exp.store(e.exp);
