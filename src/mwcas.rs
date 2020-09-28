@@ -71,7 +71,7 @@ pub unsafe fn cas2<T0, T1>(
 }
 
 pub unsafe fn cas_n<T>(
-    addresses: &[Atomic<T>],
+    addresses: &[&Atomic<T>],
     expected: &[Shared<'_, T>],
     new: &[Shared<'_, T>],
 ) -> bool {
