@@ -1,5 +1,5 @@
-use crate::ptr::{AtomicMarkedPtr, PtrCell};
-use crate::ptr::{MarkedPtr, SeqNumber};
+use crate::casword::{AtomicCasWord, CasWordCell};
+use crate::casword::{CasWord, SeqNumber};
 use crate::rdcss::RDCSS_DESCRIPTOR;
 use crate::thread_local::ThreadLocal;
 use arrayvec::ArrayVec;
@@ -13,7 +13,7 @@ static CAS2_DESCRIPTOR: Lazy<Cas2Descriptor> = Lazy::new(|| Cas2Descriptor::new(
 
 #[repr(transparent)]
 pub struct Atomic<T> {
-    data: AtomicMarkedPtr,
+    data: AtomicCasWord,
     _marker: PhantomData<*mut T>,
 }
 
@@ -21,7 +21,7 @@ impl<T> Atomic<T> {
     pub fn new(t: T) -> Self {
         let ptr = Box::into_raw(Box::new(t));
         Self {
-            data: AtomicMarkedPtr::from_usize(ptr as usize),
+            data: AtomicCasWord::from_usize(ptr as usize),
             _marker: PhantomData,
         }
     }
@@ -103,7 +103,7 @@ impl Cas2Descriptor {
         }
     }
 
-    pub fn make_descriptor(&'static self, entries: &mut [Entry]) -> MarkedPtr {
+    pub fn make_descriptor(&'static self, entries: &mut [Entry]) -> CasWord {
         let (tid, per_thread_descriptor) = CAS2_DESCRIPTOR
             .map
             .get_or_insert_with(|| CachePadded::new(ThreadCas2Descriptor::empty()));
@@ -117,18 +117,18 @@ impl Cas2Descriptor {
         let current_seq_num = per_thread_descriptor.status.load().seq_number();
 
         // create a ptr for descriptor
-        MarkedPtr::new(tid, current_seq_num).with_mark(Self::MARK)
+        CasWord::new_descriptor_ptr(tid, current_seq_num).with_mark(Self::MARK)
     }
 
     fn try_snapshot(
         &'static self,
-        descriptor_ptr: MarkedPtr,
+        descriptor_ptr: CasWord,
     ) -> Result<ThreadCas2DescriptorSnapshot, ()> {
         let thread_descriptor = self.map.get_for_thread(descriptor_ptr.tid()).unwrap();
         thread_descriptor.try_snapshot(descriptor_ptr.seq())
     }
 
-    pub fn cas2_help(&'static self, descriptor_ptr: MarkedPtr, help_other: bool) -> bool {
+    pub fn cas2_help(&'static self, descriptor_ptr: CasWord, help_other: bool) -> bool {
         let descriptor_seq = descriptor_ptr.seq();
 
         // try to snapshot descriptor we was helping
@@ -262,7 +262,7 @@ impl ThreadCas2Descriptor {
     }
 
     fn store_entries(&self, entries: &mut [Entry<'_>]) {
-        entries.sort_by_key(|e| e.addr as *const AtomicMarkedPtr);
+        entries.sort_by_key(|e| e.addr as *const AtomicCasWord);
         for (atomic_entry, entry) in self.entries.iter().zip(&*entries) {
             atomic_entry.store(entry);
         }
@@ -276,7 +276,7 @@ struct ThreadCas2DescriptorSnapshot<'a> {
 }
 
 impl ThreadCas2DescriptorSnapshot<'_> {
-    fn try_read_status(&self, descriptor_ptr: MarkedPtr) -> Result<Cas2DescriptorStatus, ()> {
+    fn try_read_status(&self, descriptor_ptr: CasWord) -> Result<Cas2DescriptorStatus, ()> {
         let status = self.status.load();
         if status.seq_number() == descriptor_ptr.seq() {
             Ok(status)
@@ -368,29 +368,18 @@ impl Cas2DescriptorStatus {
     }
 }
 
-impl std::fmt::Debug for Cas2DescriptorStatus {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "Cas2DescriptorStatus seq_num = {}, status = {}",
-            self.seq_number().as_usize(),
-            self.status()
-        )
-    }
-}
-
 struct AtomicEntry {
-    addr: PtrCell,
-    exp: AtomicMarkedPtr,
-    new: AtomicMarkedPtr,
+    addr: CasWordCell,
+    exp: AtomicCasWord,
+    new: AtomicCasWord,
 }
 
 impl AtomicEntry {
     fn empty() -> Self {
         Self {
-            addr: PtrCell::empty(),
-            exp: AtomicMarkedPtr::null(),
-            new: AtomicMarkedPtr::null(),
+            addr: CasWordCell::empty(),
+            exp: AtomicCasWord::null(),
+            new: AtomicCasWord::null(),
         }
     }
 
@@ -409,9 +398,34 @@ impl AtomicEntry {
 }
 
 struct Entry<'a> {
-    addr: &'a AtomicMarkedPtr,
-    exp: MarkedPtr,
-    new: MarkedPtr,
+    addr: &'a AtomicCasWord,
+    exp: CasWord,
+    new: CasWord,
+}
+
+pub mod traits {
+    use crate::Atomic;
+
+    pub trait CasWord: super::sealed::CasWord {}
+
+    impl<T> CasWord for Atomic<T> {}
+}
+
+
+
+mod sealed {
+    use crate::casword::AtomicCasWord;
+    use crate::Atomic;
+
+    pub trait CasWord {
+        fn as_ptr(&self) -> &AtomicCasWord;
+    }
+
+    impl<T> CasWord for Atomic<T> {
+        fn as_ptr(&self) -> &AtomicCasWord {
+            &self.data
+        }
+    }
 }
 
 #[cfg(test)]

@@ -7,12 +7,11 @@ const NUM_RESERVED_BITS: usize = 3;
 pub(crate) const SEQ_NUMBER_LENGTH: usize = 50;
 use crossbeam_epoch::Pointer;
 
-#[repr(transparent)]
 #[derive(Clone, Copy, Eq, PartialEq)]
-pub struct MarkedPtr(usize);
+pub struct CasWord(usize);
 
-impl MarkedPtr {
-    pub fn new(tid: ThreadId, seq: SeqNumber) -> Self {
+impl CasWord {
+    pub fn new_descriptor_ptr(tid: ThreadId, seq: SeqNumber) -> Self {
         let tid = (tid.as_u16() as usize) << SEQ_NUMBER_LENGTH;
         Self(tid | (seq.as_usize() << NUM_RESERVED_BITS))
     }
@@ -47,9 +46,9 @@ impl MarkedPtr {
     }
 }
 
-impl<T> From<Shared<'_, T>> for MarkedPtr {
+impl<T> From<Shared<'_, T>> for CasWord {
     fn from(s: Shared<'_, T>) -> Self {
-        MarkedPtr::from_usize(s.into_usize())
+        CasWord::from_usize(s.into_usize())
     }
 }
 
@@ -90,8 +89,8 @@ impl SeqNumber {
     }
 }
 
-pub(crate) struct AtomicMarkedPtr(AtomicUsize);
-impl AtomicMarkedPtr {
+pub struct AtomicCasWord(AtomicUsize);
+impl AtomicCasWord {
     pub fn null() -> Self {
         Self(AtomicUsize::new(0))
     }
@@ -104,19 +103,19 @@ impl AtomicMarkedPtr {
         self.0.into_inner()
     }
 
-    pub fn load(&self) -> MarkedPtr {
-        MarkedPtr::from_usize(self.0.load(Ordering::SeqCst))
+    pub fn load(&self) -> CasWord {
+        CasWord::from_usize(self.0.load(Ordering::SeqCst))
     }
 
-    pub fn store(&self, ptr: MarkedPtr) {
+    pub fn store(&self, ptr: CasWord) {
         self.0.store(ptr.into_usize(), Ordering::SeqCst);
     }
 
     pub fn compare_exchange(
         &self,
-        expected: MarkedPtr,
-        new: MarkedPtr,
-    ) -> Result<MarkedPtr, MarkedPtr> {
+        expected: CasWord,
+        new: CasWord,
+    ) -> Result<CasWord, CasWord> {
         let exchanged = self.0.compare_exchange(
             expected.into_usize(),
             new.into_usize(),
@@ -124,24 +123,24 @@ impl AtomicMarkedPtr {
             Ordering::SeqCst,
         );
         match exchanged {
-            Ok(new) => Ok(MarkedPtr::from_usize(new)),
-            Err(err) => Err(MarkedPtr::from_usize(err)),
+            Ok(new) => Ok(CasWord::from_usize(new)),
+            Err(err) => Err(CasWord::from_usize(err)),
         }
     }
 }
 
-pub(crate) struct PtrCell(AtomicPtr<AtomicMarkedPtr>);
+pub(crate) struct CasWordCell(AtomicPtr<AtomicCasWord>);
 
-impl PtrCell {
+impl CasWordCell {
     pub fn empty() -> Self {
         Self(AtomicPtr::default())
     }
 
-    pub fn store(&self, ptr: &AtomicMarkedPtr) {
+    pub fn store(&self, ptr: &AtomicCasWord) {
         self.0.store(ptr as *const _ as *mut _, Ordering::SeqCst);
     }
 
-    pub fn load<'a>(&self) -> &'a AtomicMarkedPtr {
+    pub fn load<'a>(&self) -> &'a AtomicCasWord {
         let ptr = self.0.load(Ordering::SeqCst);
         unsafe { &*ptr }
     }
@@ -155,7 +154,7 @@ mod tests {
     fn test_descriptor_ptr() {
         let seq_number = SeqNumber::from_usize(20000);
         let tid = unsafe { ThreadId::from_u16(2u16.pow(14) - 1) };
-        let descriptor = MarkedPtr::new(tid, seq_number);
+        let descriptor = CasWord::new_descriptor_ptr(tid, seq_number);
         assert_eq!(descriptor.tid(), tid);
         assert_eq!(descriptor.seq(), seq_number);
 

@@ -1,6 +1,6 @@
 use crate::mwcas::{Cas2DescriptorStatus, Cas2DescriptorStatusCell};
-use crate::ptr::{AtomicMarkedPtr, PtrCell};
-use crate::ptr::{MarkedPtr, SeqNumberGenerator};
+use crate::casword::{AtomicCasWord, CasWordCell};
+use crate::casword::{CasWord, SeqNumberGenerator};
 use crate::thread_local::ThreadLocal;
 use crossbeam_utils::{Backoff, CachePadded};
 use once_cell::sync::Lazy;
@@ -10,10 +10,10 @@ pub(crate) static RDCSS_DESCRIPTOR: Lazy<RDCSSDescriptor> = Lazy::new(|| RDCSSDe
 
 struct ThreadRDCSSDescriptor {
     status_location_cell: AtomicPtr<Cas2DescriptorStatusCell>,
-    data_location_cell: PtrCell,
+    data_location_cell: CasWordCell,
     expected_status_cell: Cas2DescriptorStatusCell,
-    expected_ptr_cell: AtomicMarkedPtr,
-    kcas_ptr_cell: AtomicMarkedPtr,
+    expected_ptr_cell: AtomicCasWord,
+    kcas_ptr_cell: AtomicCasWord,
     seq_number: SeqNumberGenerator,
 }
 
@@ -21,10 +21,10 @@ impl ThreadRDCSSDescriptor {
     fn new() -> Self {
         Self {
             status_location_cell: AtomicPtr::default(),
-            data_location_cell: PtrCell::empty(),
+            data_location_cell: CasWordCell::empty(),
             expected_status_cell: Cas2DescriptorStatusCell::new(),
-            expected_ptr_cell: AtomicMarkedPtr::null(),
-            kcas_ptr_cell: AtomicMarkedPtr::null(),
+            expected_ptr_cell: AtomicCasWord::null(),
+            kcas_ptr_cell: AtomicCasWord::null(),
             seq_number: SeqNumberGenerator::new(),
         }
     }
@@ -33,7 +33,7 @@ impl ThreadRDCSSDescriptor {
         unsafe {
             let status_location: *mut Cas2DescriptorStatusCell =
                 self.status_location_cell.load(Ordering::SeqCst);
-            let data_location: &AtomicMarkedPtr = self.data_location_cell.load();
+            let data_location: &AtomicCasWord = self.data_location_cell.load();
             let expected_status: Cas2DescriptorStatus = self.expected_status_cell.load();
             let expected_data_ptr = self.expected_ptr_cell.load();
             let kcas_ptr = self.kcas_ptr_cell.load();
@@ -50,10 +50,10 @@ impl ThreadRDCSSDescriptor {
 
 struct ThreadRDCSSDescriptorSnapshot<'g> {
     status_location: &'static Cas2DescriptorStatusCell,
-    data_location: &'g AtomicMarkedPtr,
+    data_location: &'g AtomicCasWord,
     expected_status: Cas2DescriptorStatus,
-    expected_data_ptr: MarkedPtr,
-    kcas_ptr: MarkedPtr,
+    expected_data_ptr: CasWord,
+    kcas_ptr: CasWord,
 }
 
 pub struct RDCSSDescriptor {
@@ -72,11 +72,11 @@ impl RDCSSDescriptor {
     fn make_descriptor(
         &'static self,
         status_location: &'static Cas2DescriptorStatusCell,
-        data_location: &AtomicMarkedPtr,
+        data_location: &AtomicCasWord,
         expected_status: Cas2DescriptorStatus,
-        expected_data: MarkedPtr,
-        new_kcas_ptr: MarkedPtr,
-    ) -> MarkedPtr {
+        expected_data: CasWord,
+        new_kcas_ptr: CasWord,
+    ) -> CasWord {
         let (thread_id, per_thread_descriptor) = self
             .per_thread_descriptors
             .get_or_insert_with(|| CachePadded::new(ThreadRDCSSDescriptor::new()));
@@ -96,17 +96,17 @@ impl RDCSSDescriptor {
         per_thread_descriptor.kcas_ptr_cell.store(new_kcas_ptr);
 
         let new_seq = per_thread_descriptor.seq_number.inc();
-        MarkedPtr::new(thread_id, new_seq).with_mark(Self::MARK)
+        CasWord::new_descriptor_ptr(thread_id, new_seq).with_mark(Self::MARK)
     }
 
     pub(crate) fn rdcss(
         &'static self,
         status_location: &'static Cas2DescriptorStatusCell,
-        data_location: &AtomicMarkedPtr,
+        data_location: &AtomicCasWord,
         expected_status: Cas2DescriptorStatus,
-        expected_data_ptr: MarkedPtr,
-        new_kcas_ptr: MarkedPtr,
-    ) -> MarkedPtr {
+        expected_data_ptr: CasWord,
+        new_kcas_ptr: CasWord,
+    ) -> CasWord {
         let des_ptr = self.make_descriptor(
             status_location,
             data_location,
@@ -138,7 +138,7 @@ impl RDCSSDescriptor {
         }
     }
 
-    fn rdcss_help(&self, des: MarkedPtr) {
+    fn rdcss_help(&self, des: CasWord) {
         let snapshot = self.try_snapshot(des);
         if let Ok(snapshot) = snapshot {
             let curr_status = snapshot.status_location.load();
@@ -154,7 +154,7 @@ impl RDCSSDescriptor {
         }
     }
 
-    fn try_snapshot(&self, des: MarkedPtr) -> Result<ThreadRDCSSDescriptorSnapshot, ()> {
+    fn try_snapshot(&self, des: CasWord) -> Result<ThreadRDCSSDescriptorSnapshot, ()> {
         let tid = des.tid();
         let seq = des.seq();
         let curr_thread_descriptor = self
@@ -173,7 +173,7 @@ impl RDCSSDescriptor {
         }
     }
 
-    pub(crate) fn read(&self, addr_loc: &AtomicMarkedPtr) -> MarkedPtr {
+    pub(crate) fn read(&self, addr_loc: &AtomicCasWord) -> CasWord {
         loop {
             let ptr = addr_loc.load();
             if is_marked(ptr) {
@@ -185,7 +185,7 @@ impl RDCSSDescriptor {
     }
 }
 
-pub fn is_marked(ptr: MarkedPtr) -> bool {
+pub fn is_marked(ptr: CasWord) -> bool {
     ptr.mark() == RDCSSDescriptor::MARK
 }
 

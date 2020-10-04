@@ -2,7 +2,7 @@
 
 pub(crate) mod rdcss;
 
-mod ptr;
+mod casword;
 mod thread_local;
 
 mod mwcas;
