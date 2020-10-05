@@ -1,4 +1,4 @@
-use crate::casword::{AtomicCasWord, CasWordCell};
+use crate::casword::{AtomicCasWord, AtomicCasWordCell};
 use crate::casword::{CasWord, SeqNumber};
 use crate::rdcss::RDCSS_DESCRIPTOR;
 use crate::thread_local::ThreadLocal;
@@ -7,11 +7,10 @@ use crossbeam_epoch::{Guard, Owned, Pointer, Shared};
 use crossbeam_utils::{Backoff, CachePadded};
 use once_cell::sync::Lazy;
 use std::marker::PhantomData;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize as StdAtomicUsize, Ordering};
 
 static CAS2_DESCRIPTOR: Lazy<Cas2Descriptor> = Lazy::new(|| Cas2Descriptor::new());
 
-#[repr(transparent)]
 pub struct Atomic<T> {
     data: AtomicCasWord,
     _marker: PhantomData<*mut T>,
@@ -45,22 +44,30 @@ impl<T> Atomic<T> {
 unsafe impl<T: Send + Sync> Send for Atomic<T> {}
 unsafe impl<T: Send + Sync> Sync for Atomic<T> {}
 
-pub unsafe fn cas2<T0, T1>(
-    addr0: &Atomic<T0>,
-    addr1: &Atomic<T1>,
-    exp0: Shared<'_, T0>,
-    exp1: Shared<'_, T1>,
-    new0: Shared<'_, T0>,
-    new1: Shared<'_, T1>,
-) -> bool {
+pub struct AtomicUsize {
+    data: AtomicCasWord,
+}
+
+pub unsafe fn cas2<A0, A1>(
+    addr0: &A0,
+    addr1: &A1,
+    exp0: <A0 as traits::Atom>::Word,
+    exp1: <A1 as traits::Atom>::Word,
+    new0: <A0 as traits::Atom>::Word,
+    new1: <A1 as traits::Atom>::Word,
+) -> bool
+where
+    for<'a> A0: traits::Atom<'a>,
+    for<'a> A1: traits::Atom<'a>,
+{
     let entry0 = Entry {
-        addr: &addr0.data,
+        addr: addr0.as_atomic_cas_word(),
         exp: exp0.into(),
         new: new0.into(),
     };
 
     let entry1 = Entry {
-        addr: &addr1.data,
+        addr: addr1.as_atomic_cas_word(),
         exp: exp1.into(),
         new: new1.into(),
     };
@@ -210,7 +217,7 @@ const MAX_ENTRIES: usize = 8;
 
 struct ThreadCas2Descriptor {
     pub entries: [AtomicEntry; MAX_ENTRIES],
-    pub num_entries: AtomicUsize,
+    pub num_entries: StdAtomicUsize,
     pub status: Cas2DescriptorStatusCell,
 }
 
@@ -218,7 +225,7 @@ impl ThreadCas2Descriptor {
     fn empty() -> Self {
         Self {
             status: Cas2DescriptorStatusCell::new(),
-            num_entries: AtomicUsize::new(0),
+            num_entries: StdAtomicUsize::new(0),
             entries: [
                 AtomicEntry::empty(),
                 AtomicEntry::empty(),
@@ -294,11 +301,11 @@ impl ThreadCas2DescriptorSnapshot<'_> {
     }
 }
 
-pub struct Cas2DescriptorStatusCell(AtomicUsize);
+pub struct Cas2DescriptorStatusCell(StdAtomicUsize);
 
 impl Cas2DescriptorStatusCell {
     pub fn new() -> Self {
-        Self(AtomicUsize::new(0))
+        Self(StdAtomicUsize::new(0))
     }
 
     pub fn load(&self) -> Cas2DescriptorStatus {
@@ -369,7 +376,7 @@ impl Cas2DescriptorStatus {
 }
 
 struct AtomicEntry {
-    addr: CasWordCell,
+    addr: AtomicCasWordCell,
     exp: AtomicCasWord,
     new: AtomicCasWord,
 }
@@ -377,7 +384,7 @@ struct AtomicEntry {
 impl AtomicEntry {
     fn empty() -> Self {
         Self {
-            addr: CasWordCell::empty(),
+            addr: AtomicCasWordCell::empty(),
             exp: AtomicCasWord::null(),
             new: AtomicCasWord::null(),
         }
@@ -404,28 +411,41 @@ struct Entry<'a> {
 }
 
 pub mod traits {
+    use crate::casword::{AtomicCasWord, CasWord};
+    use crate::mwcas::AtomicUsize;
     use crate::Atomic;
+    use crossbeam_epoch::Shared;
 
-    pub trait CasWord: super::sealed::CasWord {}
+    pub trait Atom<'a>: super::sealed::Sealed
+    {
+        type Word: Into<CasWord> + From<CasWord>;
 
-    impl<T> CasWord for Atomic<T> {}
-}
-
-
-
-mod sealed {
-    use crate::casword::AtomicCasWord;
-    use crate::Atomic;
-
-    pub trait CasWord {
-        fn as_ptr(&self) -> &AtomicCasWord;
+        fn as_atomic_cas_word(&self) -> &AtomicCasWord;
     }
 
-    impl<T> CasWord for Atomic<T> {
-        fn as_ptr(&self) -> &AtomicCasWord {
+    impl<'a, T: 'a> Atom<'a> for Atomic<T> {
+        type Word = Shared<'a, T>;
+
+        fn as_atomic_cas_word(&self) -> &AtomicCasWord {
             &self.data
         }
     }
+
+    impl Atom<'_> for AtomicUsize {
+        type Word = usize;
+
+        fn as_atomic_cas_word(&self) -> &AtomicCasWord {
+            &self.data
+        }
+    }
+}
+
+mod sealed {
+    pub trait Sealed {}
+
+    impl<T> Sealed for super::Atomic<T> {}
+
+    impl Sealed for super::AtomicUsize {}
 }
 
 #[cfg(test)]

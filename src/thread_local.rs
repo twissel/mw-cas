@@ -28,7 +28,7 @@ impl ThreadId {
         self.0
     }
 
-    pub unsafe fn from_u16(v: u16) -> Self {
+    pub fn from_u16(v: u16) -> Self {
         Self(v)
     }
 }

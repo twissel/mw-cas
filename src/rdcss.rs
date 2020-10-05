@@ -1,5 +1,5 @@
 use crate::mwcas::{Cas2DescriptorStatus, Cas2DescriptorStatusCell};
-use crate::casword::{AtomicCasWord, CasWordCell};
+use crate::casword::{AtomicCasWord, AtomicCasWordCell};
 use crate::casword::{CasWord, SeqNumberGenerator};
 use crate::thread_local::ThreadLocal;
 use crossbeam_utils::{Backoff, CachePadded};
@@ -10,7 +10,7 @@ pub(crate) static RDCSS_DESCRIPTOR: Lazy<RDCSSDescriptor> = Lazy::new(|| RDCSSDe
 
 struct ThreadRDCSSDescriptor {
     status_location_cell: AtomicPtr<Cas2DescriptorStatusCell>,
-    data_location_cell: CasWordCell,
+    data_location_cell: AtomicCasWordCell,
     expected_status_cell: Cas2DescriptorStatusCell,
     expected_ptr_cell: AtomicCasWord,
     kcas_ptr_cell: AtomicCasWord,
@@ -21,7 +21,7 @@ impl ThreadRDCSSDescriptor {
     fn new() -> Self {
         Self {
             status_location_cell: AtomicPtr::default(),
-            data_location_cell: CasWordCell::empty(),
+            data_location_cell: AtomicCasWordCell::empty(),
             expected_status_cell: Cas2DescriptorStatusCell::new(),
             expected_ptr_cell: AtomicCasWord::null(),
             kcas_ptr_cell: AtomicCasWord::null(),
