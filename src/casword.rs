@@ -113,8 +113,8 @@ impl AtomicCasWord {
         Self(AtomicUsize::new(0))
     }
 
-    pub fn from_usize(ptr: usize) -> Self {
-        Self(AtomicUsize::new(ptr))
+    pub fn from_usize(d: usize) -> Self {
+        Self(AtomicUsize::new(d))
     }
 
     pub fn into_inner(self) -> usize {
@@ -143,7 +143,7 @@ impl AtomicCasWord {
     }
 }
 
-pub(crate) struct AtomicCasWordCell(AtomicPtr<AtomicCasWord>);
+pub struct AtomicCasWordCell(AtomicPtr<AtomicCasWord>);
 
 impl AtomicCasWordCell {
     pub fn empty() -> Self {

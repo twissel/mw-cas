@@ -1,3 +1,4 @@
+use self::traits::Atom;
 use crate::casword::{AtomicCasWord, AtomicCasWordCell};
 use crate::casword::{CasWord, SeqNumber};
 use crate::rdcss::RDCSS_DESCRIPTOR;
@@ -26,14 +27,7 @@ impl<T> Atomic<T> {
     }
 
     pub fn load<'g>(&self, _guard: &'g Guard) -> Shared<'g, T> {
-        loop {
-            let curr = RDCSS_DESCRIPTOR.read(&self.data);
-            if curr.mark() == Cas2Descriptor::MARK {
-                CAS2_DESCRIPTOR.cas2_help(curr, true);
-            } else {
-                return unsafe { Shared::from_usize(curr.into_usize()) };
-            }
-        }
+        Shared::from(self.load_word())
     }
 
     pub unsafe fn into_owned(self) -> Owned<T> {
@@ -46,6 +40,18 @@ unsafe impl<T: Send + Sync> Sync for Atomic<T> {}
 
 pub struct AtomicUsize {
     data: AtomicCasWord,
+}
+
+impl AtomicUsize {
+    pub fn new(t: usize) -> Self {
+        Self {
+            data: AtomicCasWord::from_usize(t),
+        }
+    }
+
+    pub fn load(&self) -> usize {
+        self.load_word().into()
+    }
 }
 
 pub unsafe fn cas2<A0, A1>(
@@ -77,18 +83,21 @@ where
     CAS2_DESCRIPTOR.cas2_help(descriptor_ptr, false)
 }
 
-pub unsafe fn cas_n<T>(
-    addresses: &[Atomic<T>],
-    expected: &[Shared<'_, T>],
-    new: &[Shared<'_, T>],
-) -> bool {
+pub unsafe fn cas_n<A>(
+    addresses: &[&A],
+    expected: &[<A as traits::Atom>::Word],
+    new: &[<A as traits::Atom>::Word],
+) -> bool
+where
+    for<'a> A: traits::Atom<'a>,
+{
     assert_eq!(addresses.len(), expected.len());
     assert_eq!(expected.len(), new.len());
     assert!(addresses.len() <= MAX_ENTRIES);
     let mut entries = ArrayVec::<[Entry<'_>; MAX_ENTRIES]>::new();
     for ((addr, exp), new) in addresses.iter().zip(expected).zip(new) {
         let entry = Entry {
-            addr: &addr.data,
+            addr: addr.as_atomic_cas_word(),
             exp: (*exp).into(),
             new: (*new).into(),
         };
@@ -412,15 +421,26 @@ struct Entry<'a> {
 
 pub mod traits {
     use crate::casword::{AtomicCasWord, CasWord};
-    use crate::mwcas::AtomicUsize;
+    use crate::mwcas::{AtomicUsize, Cas2Descriptor, CAS2_DESCRIPTOR};
+    use crate::rdcss::RDCSS_DESCRIPTOR;
     use crate::Atomic;
     use crossbeam_epoch::Shared;
 
-    pub trait Atom<'a>: super::sealed::Sealed
-    {
-        type Word: Into<CasWord> + From<CasWord>;
+    pub trait Atom<'a>: super::sealed::Sealed {
+        type Word: Into<CasWord> + From<CasWord> + Copy;
 
         fn as_atomic_cas_word(&self) -> &AtomicCasWord;
+
+        fn load_word(&self) -> CasWord {
+            loop {
+                let curr = RDCSS_DESCRIPTOR.read(self.as_atomic_cas_word());
+                if curr.mark() == Cas2Descriptor::MARK {
+                    CAS2_DESCRIPTOR.cas2_help(curr, true);
+                } else {
+                    return curr;
+                }
+            }
+        }
     }
 
     impl<'a, T: 'a> Atom<'a> for Atomic<T> {
