@@ -132,13 +132,13 @@ fn cas2_benchmark(c: &mut Criterion) {
     let per_thread_attempts = 200_000;
     group.throughput(Throughput::Elements(threads * per_thread_attempts));
 
-    group.bench_function("cas2_sum_alloc", |b| {
+    /*group.bench_function("cas2_sum_alloc", |b| {
         b.iter_batched(
-            || Arc::new((0..10).map(|_| Atomic::new(0)).collect::<Vec<_>>()),
+            || Arc::new((0..8000).map(|_| Atomic::new(0)).collect::<Vec<_>>()),
             |atoms| cas2_sum_alloc(atoms, threads as usize, per_thread_attempts as usize),
             BatchSize::SmallInput,
         )
-    });
+    });*/
 
     group.bench_function("cas2_sum", |b| {
         b.iter_batched(
