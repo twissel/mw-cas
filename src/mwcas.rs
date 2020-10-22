@@ -161,8 +161,8 @@ impl CasNDescriptor {
                             return false;
                         }
                     };
-                if descriptor_current_status.status() == Cas2DescriptorStatus::UNDECIDED {
-                    let mut new_status = Cas2DescriptorStatus::succeeded(descriptor_seq);
+                if descriptor_current_status.status() == CasNDescriptorStatus::UNDECIDED {
+                    let mut new_status = CasNDescriptorStatus::succeeded(descriptor_seq);
                     let start = if help_other { 1 } else { 0 };
                     let backoff = Backoff::new();
                     'entry_loop: for entry in &descriptor_snapshot.entries[start..] {
@@ -206,7 +206,7 @@ impl CasNDescriptor {
                     };
 
                 let succeeded =
-                    descriptor_current_status.status() == Cas2DescriptorStatus::SUCCEEDED;
+                    descriptor_current_status.status() == CasNDescriptorStatus::SUCCEEDED;
                 for entry in &descriptor_snapshot.entries {
                     let new = if succeeded { entry.new } else { entry.exp };
                     let _ = entry.addr.compare_exchange(descriptor_ptr, new);
@@ -227,13 +227,13 @@ const MAX_ENTRIES: usize = 8;
 struct ThreadCasNDescriptor {
     pub entries: [AtomicEntry; MAX_ENTRIES],
     pub num_entries: StdAtomicUsize,
-    pub status: Cas2DescriptorStatusCell,
+    pub status: AtomicCasNDescriptorStatus,
 }
 
 impl ThreadCasNDescriptor {
     fn empty() -> Self {
         Self {
-            status: Cas2DescriptorStatusCell::new(),
+            status: AtomicCasNDescriptorStatus::new(),
             num_entries: StdAtomicUsize::new(0),
             entries: [
                 AtomicEntry::empty(),
@@ -250,7 +250,7 @@ impl ThreadCasNDescriptor {
 
     fn inc_seq(&self) {
         let seq_num = self.status.load().seq_number().inc();
-        self.status.store(Cas2DescriptorStatus::undecided(seq_num))
+        self.status.store(CasNDescriptorStatus::undecided(seq_num))
     }
 
     fn try_snapshot(&self, seq_num: SeqNumber) -> Result<ThreadCasNDescriptorSnapshot, ()> {
@@ -288,11 +288,11 @@ impl ThreadCasNDescriptor {
 
 struct ThreadCasNDescriptorSnapshot<'a> {
     entries: ArrayVec<[Entry<'a>; MAX_ENTRIES]>,
-    status: &'a Cas2DescriptorStatusCell,
+    status: &'a AtomicCasNDescriptorStatus,
 }
 
 impl ThreadCasNDescriptorSnapshot<'_> {
-    fn try_read_status(&self, descriptor_ptr: CasWord) -> Result<Cas2DescriptorStatus, ()> {
+    fn try_read_status(&self, descriptor_ptr: CasWord) -> Result<CasNDescriptorStatus, ()> {
         let status = self.status.load();
         if status.seq_number() == descriptor_ptr.seq() {
             Ok(status)
@@ -301,8 +301,8 @@ impl ThreadCasNDescriptorSnapshot<'_> {
         }
     }
 
-    fn cas_status(&self, expected_status: Cas2DescriptorStatus, new_status: Cas2DescriptorStatus) {
-        assert_eq!(expected_status.status(), Cas2DescriptorStatus::UNDECIDED);
+    fn cas_status(&self, expected_status: CasNDescriptorStatus, new_status: CasNDescriptorStatus) {
+        assert_eq!(expected_status.status(), CasNDescriptorStatus::UNDECIDED);
         let current_status = self.status.load();
         if current_status == expected_status {
             let _ = self.status.compare_exchange(expected_status, new_status);
@@ -310,26 +310,26 @@ impl ThreadCasNDescriptorSnapshot<'_> {
     }
 }
 
-pub struct Cas2DescriptorStatusCell(StdAtomicUsize);
+pub struct AtomicCasNDescriptorStatus(StdAtomicUsize);
 
-impl Cas2DescriptorStatusCell {
+impl AtomicCasNDescriptorStatus {
     pub fn new() -> Self {
         Self(StdAtomicUsize::new(0))
     }
 
-    pub fn load(&self) -> Cas2DescriptorStatus {
-        Cas2DescriptorStatus(self.0.load(Ordering::SeqCst))
+    pub fn load(&self) -> CasNDescriptorStatus {
+        CasNDescriptorStatus(self.0.load(Ordering::SeqCst))
     }
 
-    pub fn store(&self, status: Cas2DescriptorStatus) {
+    pub fn store(&self, status: CasNDescriptorStatus) {
         self.0.store(status.0, Ordering::SeqCst);
     }
 
     pub fn compare_exchange(
         &self,
-        expected_status: Cas2DescriptorStatus,
-        new_status: Cas2DescriptorStatus,
-    ) -> Result<Cas2DescriptorStatus, Cas2DescriptorStatus> {
+        expected_status: CasNDescriptorStatus,
+        new_status: CasNDescriptorStatus,
+    ) -> Result<CasNDescriptorStatus, CasNDescriptorStatus> {
         let swapped = self.0.compare_exchange(
             expected_status.0,
             new_status.0,
@@ -337,15 +337,15 @@ impl Cas2DescriptorStatusCell {
             Ordering::SeqCst,
         );
         swapped
-            .map(Cas2DescriptorStatus::from_usize)
-            .map_err(Cas2DescriptorStatus::from_usize)
+            .map(CasNDescriptorStatus::from_usize)
+            .map_err(CasNDescriptorStatus::from_usize)
     }
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
-pub struct Cas2DescriptorStatus(usize);
+pub struct CasNDescriptorStatus(usize);
 
-impl Cas2DescriptorStatus {
+impl CasNDescriptorStatus {
     pub const UNDECIDED: usize = 0;
     pub const SUCCEEDED: usize = 1;
     pub const FAILED: usize = 2;
@@ -366,7 +366,7 @@ impl Cas2DescriptorStatus {
         Self(seq_num | Self::FAILED)
     }
 
-    fn set_failed(self) -> Cas2DescriptorStatus {
+    fn set_failed(self) -> CasNDescriptorStatus {
         Self::failed(self.seq_number())
     }
 
