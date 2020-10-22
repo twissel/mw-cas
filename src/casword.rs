@@ -154,10 +154,10 @@ impl<T> AtomicAddress<T> {
         self.0.store(ptr as *const _ as *mut _, Ordering::SeqCst);
     }
 
-    // TODO: make this function unsafe
-    pub fn load<'a>(&self) -> &'a T {
+    // safety: store was called previously
+    pub unsafe fn load<'a>(&self) -> &'a T {
         let ptr = self.0.load(Ordering::SeqCst);
-        unsafe { &*ptr }
+        &*ptr
     }
 }
 

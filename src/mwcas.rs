@@ -400,7 +400,7 @@ impl AtomicEntry {
     }
 
     fn load<'a>(&self) -> Entry<'a> {
-        let addr = self.addr.load();
+        let addr = unsafe { self.addr.load() };
         let exp = self.exp.load();
         let new = self.new.load();
         Entry { addr, exp, new }
