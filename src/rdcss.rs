@@ -31,11 +31,11 @@ impl ThreadRDCSSDescriptor {
 
     fn snapshot(&self) -> ThreadRDCSSDescriptorSnapshot {
         unsafe {
-            let status_location: &AtomicCasNDescriptorStatus = self.status_address.load(Ordering::SeqCst);
-            let data_location: &AtomicCasWord = self.data_address.load(Ordering::SeqCst);
-            let expected_status: CasNDescriptorStatus = self.expected_status_cell.load(Ordering::SeqCst);
-            let expected_data_ptr = self.expected_ptr_cell.load(Ordering::SeqCst);
-            let kcas_ptr = self.kcas_ptr_cell.load(Ordering::SeqCst);
+            let status_location: &AtomicCasNDescriptorStatus = self.status_address.load(Ordering::Relaxed);
+            let data_location: &AtomicCasWord = self.data_address.load(Ordering::Relaxed);
+            let expected_status: CasNDescriptorStatus = self.expected_status_cell.load(Ordering::Relaxed);
+            let expected_data_ptr = self.expected_ptr_cell.load(Ordering::Relaxed);
+            let kcas_ptr = self.kcas_ptr_cell.load(Ordering::Relaxed);
             ThreadRDCSSDescriptorSnapshot {
                 status_location,
                 data_location,
@@ -83,16 +83,16 @@ impl RDCSSDescriptor {
         per_thread_descriptor.seq_number.inc();
         fence(Ordering::Release);
 
-        per_thread_descriptor.status_address.store(status_ref, Ordering::SeqCst);
+        per_thread_descriptor.status_address.store(status_ref, Ordering::Relaxed);
         per_thread_descriptor
             .data_address
-            .store(data_ref, Ordering::SeqCst);
+            .store(data_ref, Ordering::Relaxed);
 
         per_thread_descriptor
             .expected_status_cell
-            .store(expected_status, Ordering::SeqCst);
-        per_thread_descriptor.expected_ptr_cell.store(expected_data, Ordering::SeqCst);
-        per_thread_descriptor.kcas_ptr_cell.store(new_kcas_ptr, Ordering::SeqCst);
+            .store(expected_status, Ordering::Relaxed);
+        per_thread_descriptor.expected_ptr_cell.store(expected_data, Ordering::Relaxed);
+        per_thread_descriptor.kcas_ptr_cell.store(new_kcas_ptr, Ordering::Relaxed);
 
         let new_seq = per_thread_descriptor.seq_number.inc();
         CasWord::new_descriptor_ptr(thread_id, new_seq).with_mark(Self::MARK)
@@ -164,6 +164,8 @@ impl RDCSSDescriptor {
             Err(())
         } else {
             let fields = curr_thread_descriptor.snapshot();
+
+            fence(Ordering::Acquire);
             if seq != curr_thread_descriptor.seq_number.current() {
                 Err(())
             } else {

@@ -87,8 +87,9 @@ impl SeqNumberGenerator {
     }
 
     pub fn inc(&self) -> SeqNumber {
-        let curr = self.0.fetch_add(1, Ordering::SeqCst) + 1;
-        SeqNumber(curr)
+        let new = self.0.load(Ordering::Relaxed) + 1;
+        self.0.store(new, Ordering::SeqCst);
+        SeqNumber(new)
     }
 
     pub fn current(&self) -> SeqNumber {
