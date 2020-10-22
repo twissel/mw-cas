@@ -8,7 +8,7 @@ use crossbeam_epoch::{Guard, Owned, Pointer, Shared};
 use crossbeam_utils::{Backoff, CachePadded};
 use once_cell::sync::Lazy;
 use std::marker::PhantomData;
-use std::sync::atomic::{AtomicUsize as StdAtomicUsize, Ordering};
+use std::sync::atomic::{fence, AtomicUsize as StdAtomicUsize, Ordering};
 
 static CASN_DESCRIPTOR: Lazy<CasNDescriptor> = Lazy::new(|| CasNDescriptor::new());
 
@@ -126,6 +126,9 @@ impl CasNDescriptor {
 
         // invalidate current descriptor
         per_thread_descriptor.inc_seq();
+
+        fence(Ordering::Release);
+
         // sort and store addresses
         per_thread_descriptor.store_entries(entries);
         // make descriptor fully initialized
@@ -251,8 +254,9 @@ impl ThreadCasNDescriptor {
         }
     }
 
+    // only thread who owns this descriptor is allowed to call this function
     fn inc_seq(&self) {
-        let seq_num = self.status.load(Ordering::SeqCst).seq_number().inc();
+        let seq_num = self.status.load(Ordering::Relaxed).seq_number().inc();
         self.status
             .store(CasNDescriptorStatus::undecided(seq_num), Ordering::SeqCst)
     }
@@ -260,7 +264,7 @@ impl ThreadCasNDescriptor {
     fn try_snapshot(&self, seq_num: SeqNumber) -> Result<ThreadCasNDescriptorSnapshot, ()> {
         let current_seq_num = self.status.load(Ordering::SeqCst).seq_number();
         if current_seq_num == seq_num {
-            let num_entries = self.num_entries.load(Ordering::SeqCst);
+            let num_entries = self.num_entries.load(Ordering::Relaxed);
 
             assert!(num_entries >= 2);
             let entries = self.entries[0..num_entries]
@@ -268,6 +272,7 @@ impl ThreadCasNDescriptor {
                 .map(|atomic_entry| atomic_entry.load())
                 .collect();
 
+            fence(Ordering::Acquire);
             if seq_num == self.status.load(Ordering::SeqCst).seq_number() {
                 Ok(ThreadCasNDescriptorSnapshot {
                     entries,
@@ -286,7 +291,7 @@ impl ThreadCasNDescriptor {
         for (atomic_entry, entry) in self.entries.iter().zip(&*entries) {
             atomic_entry.store(entry);
         }
-        self.num_entries.store(entries.len(), Ordering::SeqCst);
+        self.num_entries.store(entries.len(), Ordering::Relaxed);
     }
 }
 
@@ -404,16 +409,16 @@ impl AtomicEntry {
     }
 
     fn load<'a>(&self) -> Entry<'a> {
-        let addr = unsafe { self.addr.load(Ordering::SeqCst) };
-        let exp = self.exp.load(Ordering::SeqCst);
-        let new = self.new.load(Ordering::SeqCst);
+        let addr = unsafe { self.addr.load(Ordering::Relaxed) };
+        let exp = self.exp.load(Ordering::Relaxed);
+        let new = self.new.load(Ordering::Relaxed);
         Entry { addr, exp, new }
     }
 
     fn store(&self, e: &Entry) {
-        self.addr.store(e.addr, Ordering::SeqCst);
-        self.new.store(e.new, Ordering::SeqCst);
-        self.exp.store(e.exp, Ordering::SeqCst);
+        self.addr.store(e.addr, Ordering::Relaxed);
+        self.new.store(e.new, Ordering::Relaxed);
+        self.exp.store(e.exp, Ordering::Relaxed);
     }
 }
 

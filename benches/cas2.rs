@@ -142,7 +142,7 @@ fn cas2_benchmark(c: &mut Criterion) {
 
     group.bench_function("cas2_sum", |b| {
         b.iter_batched(
-            || Arc::new((0..8000).map(|_| AtomicUsize::new(0)).collect::<Vec<_>>()),
+            || Arc::new((0..24_000).map(|_| AtomicUsize::new(0)).collect::<Vec<_>>()),
             |atoms| cas2_sum(atoms, threads as usize, per_thread_attempts as usize),
             BatchSize::SmallInput,
         )
