@@ -80,7 +80,7 @@ where
 
     let mut entries = [entry0, entry1];
     let descriptor_ptr = CASN_DESCRIPTOR.make_descriptor(&mut entries);
-    CASN_DESCRIPTOR.cas2_help(descriptor_ptr, false)
+    CASN_DESCRIPTOR.help(descriptor_ptr, false)
 }
 
 pub unsafe fn cas_n<A>(
@@ -104,7 +104,7 @@ where
         entries.push(entry);
     }
     let descriptor_ptr = CASN_DESCRIPTOR.make_descriptor(&mut entries);
-    CASN_DESCRIPTOR.cas2_help(descriptor_ptr, false)
+    CASN_DESCRIPTOR.help(descriptor_ptr, false)
 }
 
 struct CasNDescriptor {
@@ -144,7 +144,7 @@ impl CasNDescriptor {
         thread_descriptor.try_snapshot(descriptor_ptr.seq())
     }
 
-    pub fn cas2_help(&'static self, descriptor_ptr: CasWord, help_other: bool) -> bool {
+    pub fn help(&'static self, descriptor_ptr: CasWord, help_other: bool) -> bool {
         let descriptor_seq = descriptor_ptr.seq();
 
         // try to snapshot descriptor we was helping
@@ -179,7 +179,7 @@ impl CasNDescriptor {
 
                             if swapped.mark() == CasNDescriptor::MARK && swapped != descriptor_ptr {
                                 if backoff.is_completed() {
-                                    self.cas2_help(swapped, true);
+                                    self.help(swapped, true);
                                 } else {
                                     backoff.spin();
                                 }
@@ -435,7 +435,7 @@ pub mod traits {
             loop {
                 let curr = RDCSS_DESCRIPTOR.read(self.as_atomic_cas_word());
                 if curr.mark() == CasNDescriptor::MARK {
-                    CASN_DESCRIPTOR.cas2_help(curr, true);
+                    CASN_DESCRIPTOR.help(curr, true);
                 } else {
                     return curr;
                 }
