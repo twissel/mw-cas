@@ -10,7 +10,7 @@ use once_cell::sync::Lazy;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicUsize as StdAtomicUsize, Ordering};
 
-static CAS2_DESCRIPTOR: Lazy<Cas2Descriptor> = Lazy::new(|| Cas2Descriptor::new());
+static CASN_DESCRIPTOR: Lazy<CasNDescriptor> = Lazy::new(|| CasNDescriptor::new());
 
 pub struct Atomic<T> {
     data: AtomicCasWord,
@@ -79,8 +79,8 @@ where
     };
 
     let mut entries = [entry0, entry1];
-    let descriptor_ptr = CAS2_DESCRIPTOR.make_descriptor(&mut entries);
-    CAS2_DESCRIPTOR.cas2_help(descriptor_ptr, false)
+    let descriptor_ptr = CASN_DESCRIPTOR.make_descriptor(&mut entries);
+    CASN_DESCRIPTOR.cas2_help(descriptor_ptr, false)
 }
 
 pub unsafe fn cas_n<A>(
@@ -103,15 +103,15 @@ where
         };
         entries.push(entry);
     }
-    let descriptor_ptr = CAS2_DESCRIPTOR.make_descriptor(&mut entries);
-    CAS2_DESCRIPTOR.cas2_help(descriptor_ptr, false)
+    let descriptor_ptr = CASN_DESCRIPTOR.make_descriptor(&mut entries);
+    CASN_DESCRIPTOR.cas2_help(descriptor_ptr, false)
 }
 
-struct Cas2Descriptor {
-    map: ThreadLocal<CachePadded<ThreadCas2Descriptor>>,
+struct CasNDescriptor {
+    map: ThreadLocal<CachePadded<ThreadCasNDescriptor>>,
 }
 
-impl Cas2Descriptor {
+impl CasNDescriptor {
     const MARK: usize = 2;
     pub fn new() -> Self {
         Self {
@@ -120,9 +120,9 @@ impl Cas2Descriptor {
     }
 
     pub fn make_descriptor(&'static self, entries: &mut [Entry]) -> CasWord {
-        let (tid, per_thread_descriptor) = CAS2_DESCRIPTOR
+        let (tid, per_thread_descriptor) = CASN_DESCRIPTOR
             .map
-            .get_or_insert_with(|| CachePadded::new(ThreadCas2Descriptor::empty()));
+            .get_or_insert_with(|| CachePadded::new(ThreadCasNDescriptor::empty()));
 
         // invalidate current descriptor
         per_thread_descriptor.inc_seq();
@@ -139,7 +139,7 @@ impl Cas2Descriptor {
     fn try_snapshot(
         &'static self,
         descriptor_ptr: CasWord,
-    ) -> Result<ThreadCas2DescriptorSnapshot, ()> {
+    ) -> Result<ThreadCasNDescriptorSnapshot, ()> {
         let thread_descriptor = self.map.get_for_thread(descriptor_ptr.tid()).unwrap();
         thread_descriptor.try_snapshot(descriptor_ptr.seq())
     }
@@ -177,7 +177,7 @@ impl Cas2Descriptor {
                                 descriptor_ptr,
                             );
 
-                            if swapped.mark() == Cas2Descriptor::MARK && swapped != descriptor_ptr {
+                            if swapped.mark() == CasNDescriptor::MARK && swapped != descriptor_ptr {
                                 if backoff.is_completed() {
                                     self.cas2_help(swapped, true);
                                 } else {
@@ -224,13 +224,13 @@ impl Cas2Descriptor {
 
 const MAX_ENTRIES: usize = 8;
 
-struct ThreadCas2Descriptor {
+struct ThreadCasNDescriptor {
     pub entries: [AtomicEntry; MAX_ENTRIES],
     pub num_entries: StdAtomicUsize,
     pub status: Cas2DescriptorStatusCell,
 }
 
-impl ThreadCas2Descriptor {
+impl ThreadCasNDescriptor {
     fn empty() -> Self {
         Self {
             status: Cas2DescriptorStatusCell::new(),
@@ -253,7 +253,7 @@ impl ThreadCas2Descriptor {
         self.status.store(Cas2DescriptorStatus::undecided(seq_num))
     }
 
-    fn try_snapshot(&self, seq_num: SeqNumber) -> Result<ThreadCas2DescriptorSnapshot, ()> {
+    fn try_snapshot(&self, seq_num: SeqNumber) -> Result<ThreadCasNDescriptorSnapshot, ()> {
         let current_seq_num = self.status.load().seq_number();
         if current_seq_num == seq_num {
             let num_entries = self.num_entries.load(Ordering::SeqCst);
@@ -265,7 +265,7 @@ impl ThreadCas2Descriptor {
                 .collect();
 
             if seq_num == self.status.load().seq_number() {
-                Ok(ThreadCas2DescriptorSnapshot {
+                Ok(ThreadCasNDescriptorSnapshot {
                     entries,
                     status: &self.status,
                 })
@@ -286,12 +286,12 @@ impl ThreadCas2Descriptor {
     }
 }
 
-struct ThreadCas2DescriptorSnapshot<'a> {
+struct ThreadCasNDescriptorSnapshot<'a> {
     entries: ArrayVec<[Entry<'a>; MAX_ENTRIES]>,
     status: &'a Cas2DescriptorStatusCell,
 }
 
-impl ThreadCas2DescriptorSnapshot<'_> {
+impl ThreadCasNDescriptorSnapshot<'_> {
     fn try_read_status(&self, descriptor_ptr: CasWord) -> Result<Cas2DescriptorStatus, ()> {
         let status = self.status.load();
         if status.seq_number() == descriptor_ptr.seq() {
@@ -421,7 +421,7 @@ struct Entry<'a> {
 
 pub mod traits {
     use crate::casword::{AtomicCasWord, CasWord};
-    use crate::mwcas::{AtomicUsize, Cas2Descriptor, CAS2_DESCRIPTOR};
+    use crate::mwcas::{AtomicUsize, CasNDescriptor, CASN_DESCRIPTOR};
     use crate::rdcss::RDCSS_DESCRIPTOR;
     use crate::Atomic;
     use crossbeam_epoch::Shared;
@@ -434,8 +434,8 @@ pub mod traits {
         fn load_word(&self) -> CasWord {
             loop {
                 let curr = RDCSS_DESCRIPTOR.read(self.as_atomic_cas_word());
-                if curr.mark() == Cas2Descriptor::MARK {
-                    CAS2_DESCRIPTOR.cas2_help(curr, true);
+                if curr.mark() == CasNDescriptor::MARK {
+                    CASN_DESCRIPTOR.cas2_help(curr, true);
                 } else {
                     return curr;
                 }
