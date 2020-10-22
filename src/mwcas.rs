@@ -1,5 +1,5 @@
 use self::traits::Atom;
-use crate::casword::{AtomicCasWord, AtomicAddress};
+use crate::casword::{AtomicAddress, AtomicCasWord};
 use crate::casword::{CasWord, SeqNumber};
 use crate::rdcss::RDCSS_DESCRIPTOR;
 use crate::thread_local::ThreadLocal;
@@ -130,7 +130,10 @@ impl CasNDescriptor {
         per_thread_descriptor.store_entries(entries);
         // make descriptor fully initialized
         per_thread_descriptor.inc_seq();
-        let current_seq_num = per_thread_descriptor.status.load().seq_number();
+        let current_seq_num = per_thread_descriptor
+            .status
+            .load(Ordering::SeqCst)
+            .seq_number();
 
         // create a ptr for descriptor
         CasWord::new_descriptor_ptr(tid, current_seq_num).with_mark(Self::MARK)
@@ -249,12 +252,13 @@ impl ThreadCasNDescriptor {
     }
 
     fn inc_seq(&self) {
-        let seq_num = self.status.load().seq_number().inc();
-        self.status.store(CasNDescriptorStatus::undecided(seq_num))
+        let seq_num = self.status.load(Ordering::SeqCst).seq_number().inc();
+        self.status
+            .store(CasNDescriptorStatus::undecided(seq_num), Ordering::SeqCst)
     }
 
     fn try_snapshot(&self, seq_num: SeqNumber) -> Result<ThreadCasNDescriptorSnapshot, ()> {
-        let current_seq_num = self.status.load().seq_number();
+        let current_seq_num = self.status.load(Ordering::SeqCst).seq_number();
         if current_seq_num == seq_num {
             let num_entries = self.num_entries.load(Ordering::SeqCst);
 
@@ -264,7 +268,7 @@ impl ThreadCasNDescriptor {
                 .map(|atomic_entry| atomic_entry.load())
                 .collect();
 
-            if seq_num == self.status.load().seq_number() {
+            if seq_num == self.status.load(Ordering::SeqCst).seq_number() {
                 Ok(ThreadCasNDescriptorSnapshot {
                     entries,
                     status: &self.status,
@@ -293,7 +297,7 @@ struct ThreadCasNDescriptorSnapshot<'a> {
 
 impl ThreadCasNDescriptorSnapshot<'_> {
     fn try_read_status(&self, descriptor_ptr: CasWord) -> Result<CasNDescriptorStatus, ()> {
-        let status = self.status.load();
+        let status = self.status.load(Ordering::SeqCst);
         if status.seq_number() == descriptor_ptr.seq() {
             Ok(status)
         } else {
@@ -303,7 +307,7 @@ impl ThreadCasNDescriptorSnapshot<'_> {
 
     fn cas_status(&self, expected_status: CasNDescriptorStatus, new_status: CasNDescriptorStatus) {
         assert_eq!(expected_status.status(), CasNDescriptorStatus::UNDECIDED);
-        let current_status = self.status.load();
+        let current_status = self.status.load(Ordering::SeqCst);
         if current_status == expected_status {
             let _ = self.status.compare_exchange(expected_status, new_status);
         }
@@ -317,12 +321,12 @@ impl AtomicCasNDescriptorStatus {
         Self(StdAtomicUsize::new(0))
     }
 
-    pub fn load(&self) -> CasNDescriptorStatus {
-        CasNDescriptorStatus(self.0.load(Ordering::SeqCst))
+    pub fn load(&self, ordering: Ordering) -> CasNDescriptorStatus {
+        CasNDescriptorStatus(self.0.load(ordering))
     }
 
-    pub fn store(&self, status: CasNDescriptorStatus) {
-        self.0.store(status.0, Ordering::SeqCst);
+    pub fn store(&self, status: CasNDescriptorStatus, ordering: Ordering) {
+        self.0.store(status.0, ordering);
     }
 
     pub fn compare_exchange(
@@ -400,16 +404,16 @@ impl AtomicEntry {
     }
 
     fn load<'a>(&self) -> Entry<'a> {
-        let addr = unsafe { self.addr.load() };
-        let exp = self.exp.load();
-        let new = self.new.load();
+        let addr = unsafe { self.addr.load(Ordering::SeqCst) };
+        let exp = self.exp.load(Ordering::SeqCst);
+        let new = self.new.load(Ordering::SeqCst);
         Entry { addr, exp, new }
     }
 
     fn store(&self, e: &Entry) {
-        self.addr.store(e.addr);
-        self.new.store(e.new);
-        self.exp.store(e.exp);
+        self.addr.store(e.addr, Ordering::SeqCst);
+        self.new.store(e.new, Ordering::SeqCst);
+        self.exp.store(e.exp, Ordering::SeqCst);
     }
 }
 

@@ -121,12 +121,12 @@ impl AtomicCasWord {
         self.0.into_inner()
     }
 
-    pub fn load(&self) -> CasWord {
-        CasWord::from_usize(self.0.load(Ordering::SeqCst))
+    pub fn load(&self, ord: Ordering) -> CasWord {
+        CasWord::from_usize(self.0.load(ord))
     }
 
-    pub fn store(&self, word: CasWord) {
-        self.0.store(word.into_usize(), Ordering::SeqCst);
+    pub fn store(&self, word: CasWord, ord: Ordering) {
+        self.0.store(word.into_usize(), ord);
     }
 
     pub fn compare_exchange(&self, expected: CasWord, new: CasWord) -> Result<CasWord, CasWord> {
@@ -150,13 +150,13 @@ impl<T> AtomicAddress<T> {
         Self(AtomicPtr::default())
     }
 
-    pub fn store(&self, ptr: &T) {
-        self.0.store(ptr as *const _ as *mut _, Ordering::SeqCst);
+    pub fn store(&self, ptr: &T, ordering: Ordering) {
+        self.0.store(ptr as *const _ as *mut _, ordering);
     }
 
     // safety: store was called previously
-    pub unsafe fn load<'a>(&self) -> &'a T {
-        let ptr = self.0.load(Ordering::SeqCst);
+    pub unsafe fn load<'a>(&self, ordering: Ordering) -> &'a T {
+        let ptr = self.0.load(ordering);
         &*ptr
     }
 }

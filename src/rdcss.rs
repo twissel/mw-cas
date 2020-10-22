@@ -4,6 +4,7 @@ use crate::casword::{CasWord, SeqNumberGenerator};
 use crate::thread_local::ThreadLocal;
 use crossbeam_utils::{Backoff, CachePadded};
 use once_cell::sync::Lazy;
+use std::sync::atomic::{Ordering, fence};
 
 pub(crate) static RDCSS_DESCRIPTOR: Lazy<RDCSSDescriptor> = Lazy::new(|| RDCSSDescriptor::new());
 
@@ -30,11 +31,11 @@ impl ThreadRDCSSDescriptor {
 
     fn snapshot(&self) -> ThreadRDCSSDescriptorSnapshot {
         unsafe {
-            let status_location: &AtomicCasNDescriptorStatus = self.status_address.load();
-            let data_location: &AtomicCasWord = self.data_address.load();
-            let expected_status: CasNDescriptorStatus = self.expected_status_cell.load();
-            let expected_data_ptr = self.expected_ptr_cell.load();
-            let kcas_ptr = self.kcas_ptr_cell.load();
+            let status_location: &AtomicCasNDescriptorStatus = self.status_address.load(Ordering::SeqCst);
+            let data_location: &AtomicCasWord = self.data_address.load(Ordering::SeqCst);
+            let expected_status: CasNDescriptorStatus = self.expected_status_cell.load(Ordering::SeqCst);
+            let expected_data_ptr = self.expected_ptr_cell.load(Ordering::SeqCst);
+            let kcas_ptr = self.kcas_ptr_cell.load(Ordering::SeqCst);
             ThreadRDCSSDescriptorSnapshot {
                 status_location,
                 data_location,
@@ -69,8 +70,8 @@ impl RDCSSDescriptor {
 
     fn make_descriptor(
         &'static self,
-        status_location: &'static AtomicCasNDescriptorStatus,
-        data_location: &AtomicCasWord,
+        status_ref: &'static AtomicCasNDescriptorStatus,
+        data_ref: &AtomicCasWord,
         expected_status: CasNDescriptorStatus,
         expected_data: CasWord,
         new_kcas_ptr: CasWord,
@@ -78,17 +79,20 @@ impl RDCSSDescriptor {
         let (thread_id, per_thread_descriptor) = self
             .per_thread_descriptors
             .get_or_insert_with(|| CachePadded::new(ThreadRDCSSDescriptor::new()));
+
         per_thread_descriptor.seq_number.inc();
-        per_thread_descriptor.status_address.store(status_location);
+        fence(Ordering::Release);
+
+        per_thread_descriptor.status_address.store(status_ref, Ordering::SeqCst);
         per_thread_descriptor
             .data_address
-            .store(data_location);
+            .store(data_ref, Ordering::SeqCst);
 
         per_thread_descriptor
             .expected_status_cell
-            .store(expected_status);
-        per_thread_descriptor.expected_ptr_cell.store(expected_data);
-        per_thread_descriptor.kcas_ptr_cell.store(new_kcas_ptr);
+            .store(expected_status, Ordering::SeqCst);
+        per_thread_descriptor.expected_ptr_cell.store(expected_data, Ordering::SeqCst);
+        per_thread_descriptor.kcas_ptr_cell.store(new_kcas_ptr, Ordering::SeqCst);
 
         let new_seq = per_thread_descriptor.seq_number.inc();
         CasWord::new_descriptor_ptr(thread_id, new_seq).with_mark(Self::MARK)
@@ -111,7 +115,7 @@ impl RDCSSDescriptor {
         );
         let backoff = Backoff::new();
         loop {
-            let current = data_location.load();
+            let current = data_location.load(Ordering::SeqCst);
             if is_marked(current) {
                 if backoff.is_completed() {
                     self.rdcss_help(des_ptr);
@@ -136,7 +140,7 @@ impl RDCSSDescriptor {
     fn rdcss_help(&self, des: CasWord) {
         let snapshot = self.try_snapshot(des);
         if let Ok(snapshot) = snapshot {
-            let curr_status = snapshot.status_location.load();
+            let curr_status = snapshot.status_location.load(Ordering::SeqCst);
             if curr_status == snapshot.expected_status {
                 let _ = snapshot
                     .data_location
@@ -170,7 +174,7 @@ impl RDCSSDescriptor {
 
     pub(crate) fn read(&self, addr_loc: &AtomicCasWord) -> CasWord {
         loop {
-            let ptr = addr_loc.load();
+            let ptr = addr_loc.load(Ordering::SeqCst);
             if is_marked(ptr) {
                 self.rdcss_help(ptr);
             } else {
