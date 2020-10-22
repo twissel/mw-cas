@@ -4,7 +4,6 @@ use crate::thread_local::ThreadId;
 use crossbeam_epoch::Shared;
 
 const SHIFT: usize = 2;
-pub(crate) const SEQ_NUMBER_LENGTH: usize = 50;
 use crossbeam_epoch::Pointer;
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -12,16 +11,16 @@ pub struct CasWord(usize);
 
 impl CasWord {
     pub fn new_descriptor_ptr(tid: ThreadId, seq: SeqNumber) -> Self {
-        let tid = (tid.as_u16() as usize) << SEQ_NUMBER_LENGTH;
+        let tid = (tid.as_u16() as usize) << (SeqNumber::LENGTH + SHIFT);
         Self(tid | (seq.as_usize() << SHIFT))
     }
 
     pub fn tid(&self) -> ThreadId {
-        ThreadId::from_u16((self.0 >> SEQ_NUMBER_LENGTH) as u16)
+        ThreadId::from_u16((self.0 >> (SeqNumber::LENGTH + SHIFT)) as u16)
     }
 
     pub fn seq(&self) -> SeqNumber {
-        let mask = (1usize << (SEQ_NUMBER_LENGTH)) - 1;
+        let mask = (1usize << (SeqNumber::LENGTH + SHIFT)) - 1;
         let seq = (self.0 & mask) >> SHIFT;
         SeqNumber::from_usize(seq)
     }
@@ -73,6 +72,7 @@ impl From<CasWord> for usize {
 pub struct SeqNumber(usize);
 
 impl SeqNumber {
+    pub const LENGTH: usize = 48;
     pub fn inc(&self) -> SeqNumber {
         Self(self.0 + 1)
     }

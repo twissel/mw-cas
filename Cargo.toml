@@ -20,7 +20,8 @@ rayon = "1.4.0"
 mimalloc = { version = "0.1", default-features = false }
 rand = { version = "0.7",  features = ["small_rng"] }
 
-[profile.release]
+
+[profile.bench]
 debug = true
 
 
