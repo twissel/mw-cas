@@ -1,5 +1,6 @@
-use crate::ptr::{AtomicMarkedPtr, PtrCell};
-use crate::ptr::{MarkedPtr, SeqNumber};
+use self::traits::Atom;
+use crate::casword::{AtomicCasWord, AtomicCasWordCell};
+use crate::casword::{CasWord, SeqNumber};
 use crate::rdcss::RDCSS_DESCRIPTOR;
 use crate::thread_local::ThreadLocal;
 use arrayvec::ArrayVec;
@@ -7,13 +8,12 @@ use crossbeam_epoch::{Guard, Owned, Pointer, Shared};
 use crossbeam_utils::{Backoff, CachePadded};
 use once_cell::sync::Lazy;
 use std::marker::PhantomData;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize as StdAtomicUsize, Ordering};
 
 static CAS2_DESCRIPTOR: Lazy<Cas2Descriptor> = Lazy::new(|| Cas2Descriptor::new());
 
-#[repr(transparent)]
 pub struct Atomic<T> {
-    data: AtomicMarkedPtr,
+    data: AtomicCasWord,
     _marker: PhantomData<*mut T>,
 }
 
@@ -21,20 +21,13 @@ impl<T> Atomic<T> {
     pub fn new(t: T) -> Self {
         let ptr = Box::into_raw(Box::new(t));
         Self {
-            data: AtomicMarkedPtr::from_usize(ptr as usize),
+            data: AtomicCasWord::from_usize(ptr as usize),
             _marker: PhantomData,
         }
     }
 
     pub fn load<'g>(&self, _guard: &'g Guard) -> Shared<'g, T> {
-        loop {
-            let curr = RDCSS_DESCRIPTOR.read(&self.data);
-            if curr.mark() == Cas2Descriptor::MARK {
-                CAS2_DESCRIPTOR.cas2_help(curr, true);
-            } else {
-                return unsafe { Shared::from_usize(curr.into_usize()) };
-            }
-        }
+        Shared::from(self.load_word())
     }
 
     pub unsafe fn into_owned(self) -> Owned<T> {
@@ -45,22 +38,42 @@ impl<T> Atomic<T> {
 unsafe impl<T: Send + Sync> Send for Atomic<T> {}
 unsafe impl<T: Send + Sync> Sync for Atomic<T> {}
 
-pub unsafe fn cas2<T0, T1>(
-    addr0: &Atomic<T0>,
-    addr1: &Atomic<T1>,
-    exp0: Shared<'_, T0>,
-    exp1: Shared<'_, T1>,
-    new0: Shared<'_, T0>,
-    new1: Shared<'_, T1>,
-) -> bool {
+pub struct AtomicUsize {
+    data: AtomicCasWord,
+}
+
+impl AtomicUsize {
+    pub fn new(t: usize) -> Self {
+        Self {
+            data: AtomicCasWord::from_usize(t),
+        }
+    }
+
+    pub fn load(&self) -> usize {
+        self.load_word().into()
+    }
+}
+
+pub unsafe fn cas2<A0, A1>(
+    addr0: &A0,
+    addr1: &A1,
+    exp0: <A0 as traits::Atom>::Word,
+    exp1: <A1 as traits::Atom>::Word,
+    new0: <A0 as traits::Atom>::Word,
+    new1: <A1 as traits::Atom>::Word,
+) -> bool
+where
+    for<'a> A0: traits::Atom<'a>,
+    for<'a> A1: traits::Atom<'a>,
+{
     let entry0 = Entry {
-        addr: &addr0.data,
+        addr: addr0.as_atomic_cas_word(),
         exp: exp0.into(),
         new: new0.into(),
     };
 
     let entry1 = Entry {
-        addr: &addr1.data,
+        addr: addr1.as_atomic_cas_word(),
         exp: exp1.into(),
         new: new1.into(),
     };
@@ -70,18 +83,21 @@ pub unsafe fn cas2<T0, T1>(
     CAS2_DESCRIPTOR.cas2_help(descriptor_ptr, false)
 }
 
-pub unsafe fn cas_n<T>(
-    addresses: &[&Atomic<T>],
-    expected: &[Shared<'_, T>],
-    new: &[Shared<'_, T>],
-) -> bool {
+pub unsafe fn cas_n<A>(
+    addresses: &[&A],
+    expected: &[<A as traits::Atom>::Word],
+    new: &[<A as traits::Atom>::Word],
+) -> bool
+where
+    for<'a> A: traits::Atom<'a>,
+{
     assert_eq!(addresses.len(), expected.len());
     assert_eq!(expected.len(), new.len());
     assert!(addresses.len() <= MAX_ENTRIES);
     let mut entries = ArrayVec::<[Entry<'_>; MAX_ENTRIES]>::new();
     for ((addr, exp), new) in addresses.iter().zip(expected).zip(new) {
         let entry = Entry {
-            addr: &addr.data,
+            addr: addr.as_atomic_cas_word(),
             exp: (*exp).into(),
             new: (*new).into(),
         };
@@ -103,7 +119,7 @@ impl Cas2Descriptor {
         }
     }
 
-    pub fn make_descriptor(&'static self, entries: &mut [Entry]) -> MarkedPtr {
+    pub fn make_descriptor(&'static self, entries: &mut [Entry]) -> CasWord {
         let (tid, per_thread_descriptor) = CAS2_DESCRIPTOR
             .map
             .get_or_insert_with(|| CachePadded::new(ThreadCas2Descriptor::empty()));
@@ -117,18 +133,18 @@ impl Cas2Descriptor {
         let current_seq_num = per_thread_descriptor.status.load().seq_number();
 
         // create a ptr for descriptor
-        MarkedPtr::new(tid, current_seq_num).with_mark(Self::MARK)
+        CasWord::new_descriptor_ptr(tid, current_seq_num).with_mark(Self::MARK)
     }
 
     fn try_snapshot(
         &'static self,
-        descriptor_ptr: MarkedPtr,
+        descriptor_ptr: CasWord,
     ) -> Result<ThreadCas2DescriptorSnapshot, ()> {
         let thread_descriptor = self.map.get_for_thread(descriptor_ptr.tid()).unwrap();
         thread_descriptor.try_snapshot(descriptor_ptr.seq())
     }
 
-    pub fn cas2_help(&'static self, descriptor_ptr: MarkedPtr, help_other: bool) -> bool {
+    pub fn cas2_help(&'static self, descriptor_ptr: CasWord, help_other: bool) -> bool {
         let descriptor_seq = descriptor_ptr.seq();
 
         // try to snapshot descriptor we was helping
@@ -210,7 +226,7 @@ const MAX_ENTRIES: usize = 8;
 
 struct ThreadCas2Descriptor {
     pub entries: [AtomicEntry; MAX_ENTRIES],
-    pub num_entries: AtomicUsize,
+    pub num_entries: StdAtomicUsize,
     pub status: Cas2DescriptorStatusCell,
 }
 
@@ -218,7 +234,7 @@ impl ThreadCas2Descriptor {
     fn empty() -> Self {
         Self {
             status: Cas2DescriptorStatusCell::new(),
-            num_entries: AtomicUsize::new(0),
+            num_entries: StdAtomicUsize::new(0),
             entries: [
                 AtomicEntry::empty(),
                 AtomicEntry::empty(),
@@ -262,7 +278,7 @@ impl ThreadCas2Descriptor {
     }
 
     fn store_entries(&self, entries: &mut [Entry<'_>]) {
-        entries.sort_by_key(|e| e.addr as *const AtomicMarkedPtr);
+        entries.sort_by_key(|e| e.addr as *const AtomicCasWord);
         for (atomic_entry, entry) in self.entries.iter().zip(&*entries) {
             atomic_entry.store(entry);
         }
@@ -276,7 +292,7 @@ struct ThreadCas2DescriptorSnapshot<'a> {
 }
 
 impl ThreadCas2DescriptorSnapshot<'_> {
-    fn try_read_status(&self, descriptor_ptr: MarkedPtr) -> Result<Cas2DescriptorStatus, ()> {
+    fn try_read_status(&self, descriptor_ptr: CasWord) -> Result<Cas2DescriptorStatus, ()> {
         let status = self.status.load();
         if status.seq_number() == descriptor_ptr.seq() {
             Ok(status)
@@ -294,11 +310,11 @@ impl ThreadCas2DescriptorSnapshot<'_> {
     }
 }
 
-pub struct Cas2DescriptorStatusCell(AtomicUsize);
+pub struct Cas2DescriptorStatusCell(StdAtomicUsize);
 
 impl Cas2DescriptorStatusCell {
     pub fn new() -> Self {
-        Self(AtomicUsize::new(0))
+        Self(StdAtomicUsize::new(0))
     }
 
     pub fn load(&self) -> Cas2DescriptorStatus {
@@ -368,29 +384,18 @@ impl Cas2DescriptorStatus {
     }
 }
 
-impl std::fmt::Debug for Cas2DescriptorStatus {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "Cas2DescriptorStatus seq_num = {}, status = {}",
-            self.seq_number().as_usize(),
-            self.status()
-        )
-    }
-}
-
 struct AtomicEntry {
-    addr: PtrCell,
-    exp: AtomicMarkedPtr,
-    new: AtomicMarkedPtr,
+    addr: AtomicCasWordCell,
+    exp: AtomicCasWord,
+    new: AtomicCasWord,
 }
 
 impl AtomicEntry {
     fn empty() -> Self {
         Self {
-            addr: PtrCell::empty(),
-            exp: AtomicMarkedPtr::null(),
-            new: AtomicMarkedPtr::null(),
+            addr: AtomicCasWordCell::empty(),
+            exp: AtomicCasWord::null(),
+            new: AtomicCasWord::null(),
         }
     }
 
@@ -409,9 +414,58 @@ impl AtomicEntry {
 }
 
 struct Entry<'a> {
-    addr: &'a AtomicMarkedPtr,
-    exp: MarkedPtr,
-    new: MarkedPtr,
+    addr: &'a AtomicCasWord,
+    exp: CasWord,
+    new: CasWord,
+}
+
+pub mod traits {
+    use crate::casword::{AtomicCasWord, CasWord};
+    use crate::mwcas::{AtomicUsize, Cas2Descriptor, CAS2_DESCRIPTOR};
+    use crate::rdcss::RDCSS_DESCRIPTOR;
+    use crate::Atomic;
+    use crossbeam_epoch::Shared;
+
+    pub trait Atom<'a>: super::sealed::Sealed {
+        type Word: Into<CasWord> + From<CasWord> + Copy;
+
+        fn as_atomic_cas_word(&self) -> &AtomicCasWord;
+
+        fn load_word(&self) -> CasWord {
+            loop {
+                let curr = RDCSS_DESCRIPTOR.read(self.as_atomic_cas_word());
+                if curr.mark() == Cas2Descriptor::MARK {
+                    CAS2_DESCRIPTOR.cas2_help(curr, true);
+                } else {
+                    return curr;
+                }
+            }
+        }
+    }
+
+    impl<'a, T: 'a> Atom<'a> for Atomic<T> {
+        type Word = Shared<'a, T>;
+
+        fn as_atomic_cas_word(&self) -> &AtomicCasWord {
+            &self.data
+        }
+    }
+
+    impl Atom<'_> for AtomicUsize {
+        type Word = usize;
+
+        fn as_atomic_cas_word(&self) -> &AtomicCasWord {
+            &self.data
+        }
+    }
+}
+
+mod sealed {
+    pub trait Sealed {}
+
+    impl<T> Sealed for super::Atomic<T> {}
+
+    impl Sealed for super::AtomicUsize {}
 }
 
 #[cfg(test)]
