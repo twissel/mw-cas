@@ -80,7 +80,7 @@ impl RDCSSDescriptor {
             .per_thread_descriptors
             .get_or_insert_with(|| CachePadded::new(ThreadRDCSSDescriptor::new()));
 
-        per_thread_descriptor.seq_number.inc();
+        per_thread_descriptor.seq_number.inc(Ordering::Relaxed);
         fence(Ordering::Release);
 
         per_thread_descriptor.status_address.store(status_ref, Ordering::Relaxed);
@@ -94,7 +94,7 @@ impl RDCSSDescriptor {
         per_thread_descriptor.expected_ptr_cell.store(expected_data, Ordering::Relaxed);
         per_thread_descriptor.kcas_ptr_cell.store(new_kcas_ptr, Ordering::Relaxed);
 
-        let new_seq = per_thread_descriptor.seq_number.inc();
+        let new_seq = per_thread_descriptor.seq_number.inc(Ordering::Release);
         CasWord::new_descriptor_ptr(thread_id, new_seq).with_mark(Self::MARK)
     }
 
@@ -160,13 +160,13 @@ impl RDCSSDescriptor {
             .per_thread_descriptors
             .get_for_thread(tid)
             .expect("Missing thread descriptor");
-        if seq != curr_thread_descriptor.seq_number.current() {
+        if seq != curr_thread_descriptor.seq_number.current(Ordering::Acquire) {
             Err(())
         } else {
             let fields = curr_thread_descriptor.snapshot();
 
             fence(Ordering::Acquire);
-            if seq != curr_thread_descriptor.seq_number.current() {
+            if seq != curr_thread_descriptor.seq_number.current(Ordering::Relaxed) {
                 Err(())
             } else {
                 Ok(fields)

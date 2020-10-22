@@ -86,14 +86,14 @@ impl SeqNumberGenerator {
         Self(AtomicUsize::new(0))
     }
 
-    pub fn inc(&self) -> SeqNumber {
+    pub fn inc(&self, store_ordering: Ordering) -> SeqNumber {
         let new = self.0.load(Ordering::Relaxed) + 1;
-        self.0.store(new, Ordering::SeqCst);
+        self.0.store(new, store_ordering);
         SeqNumber(new)
     }
 
-    pub fn current(&self) -> SeqNumber {
-        SeqNumber(self.0.load(Ordering::SeqCst))
+    pub fn current(&self, ordering: Ordering) -> SeqNumber {
+        SeqNumber(self.0.load(ordering))
     }
 }
 
