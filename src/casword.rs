@@ -143,9 +143,9 @@ impl AtomicCasWord {
     }
 }
 
-pub struct AtomicCasWordCell(AtomicPtr<AtomicCasWord>);
+pub struct AtomicCasWordAtomicAddress(AtomicPtr<AtomicCasWord>);
 
-impl AtomicCasWordCell {
+impl AtomicCasWordAtomicAddress {
     pub fn empty() -> Self {
         Self(AtomicPtr::default())
     }
