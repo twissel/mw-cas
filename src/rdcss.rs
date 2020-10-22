@@ -1,16 +1,15 @@
 use crate::mwcas::{CasNDescriptorStatus, AtomicCasNDescriptorStatus};
-use crate::casword::{AtomicCasWord, AtomicCasWordAtomicAddress};
+use crate::casword::{AtomicCasWord, AtomicAddress};
 use crate::casword::{CasWord, SeqNumberGenerator};
 use crate::thread_local::ThreadLocal;
 use crossbeam_utils::{Backoff, CachePadded};
 use once_cell::sync::Lazy;
-use std::sync::atomic::{AtomicPtr, Ordering};
 
 pub(crate) static RDCSS_DESCRIPTOR: Lazy<RDCSSDescriptor> = Lazy::new(|| RDCSSDescriptor::new());
 
 struct ThreadRDCSSDescriptor {
-    status_location_cell: AtomicPtr<AtomicCasNDescriptorStatus>,
-    data_location_cell: AtomicCasWordAtomicAddress,
+    status_address: AtomicAddress<AtomicCasNDescriptorStatus>,
+    data_address: AtomicAddress<AtomicCasWord>,
     expected_status_cell: AtomicCasNDescriptorStatus,
     expected_ptr_cell: AtomicCasWord,
     kcas_ptr_cell: AtomicCasWord,
@@ -20,8 +19,8 @@ struct ThreadRDCSSDescriptor {
 impl ThreadRDCSSDescriptor {
     fn new() -> Self {
         Self {
-            status_location_cell: AtomicPtr::default(),
-            data_location_cell: AtomicCasWordAtomicAddress::empty(),
+            status_address: AtomicAddress::empty(),
+            data_address: AtomicAddress::empty(),
             expected_status_cell: AtomicCasNDescriptorStatus::new(),
             expected_ptr_cell: AtomicCasWord::null(),
             kcas_ptr_cell: AtomicCasWord::null(),
@@ -31,14 +30,13 @@ impl ThreadRDCSSDescriptor {
 
     fn snapshot(&self) -> ThreadRDCSSDescriptorSnapshot {
         unsafe {
-            let status_location: *mut AtomicCasNDescriptorStatus =
-                self.status_location_cell.load(Ordering::SeqCst);
-            let data_location: &AtomicCasWord = self.data_location_cell.load();
+            let status_location: &AtomicCasNDescriptorStatus = self.status_address.load();
+            let data_location: &AtomicCasWord = self.data_address.load();
             let expected_status: CasNDescriptorStatus = self.expected_status_cell.load();
             let expected_data_ptr = self.expected_ptr_cell.load();
             let kcas_ptr = self.kcas_ptr_cell.load();
             ThreadRDCSSDescriptorSnapshot {
-                status_location: &*status_location,
+                status_location,
                 data_location,
                 expected_status,
                 expected_data_ptr,
@@ -81,12 +79,9 @@ impl RDCSSDescriptor {
             .per_thread_descriptors
             .get_or_insert_with(|| CachePadded::new(ThreadRDCSSDescriptor::new()));
         per_thread_descriptor.seq_number.inc();
-        per_thread_descriptor.status_location_cell.store(
-            status_location as *const AtomicCasNDescriptorStatus as *mut _,
-            Ordering::SeqCst,
-        );
+        per_thread_descriptor.status_address.store(status_location);
         per_thread_descriptor
-            .data_location_cell
+            .data_address
             .store(data_location);
 
         per_thread_descriptor

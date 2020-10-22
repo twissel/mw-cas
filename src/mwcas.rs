@@ -1,5 +1,5 @@
 use self::traits::Atom;
-use crate::casword::{AtomicCasWord, AtomicCasWordAtomicAddress};
+use crate::casword::{AtomicCasWord, AtomicAddress};
 use crate::casword::{CasWord, SeqNumber};
 use crate::rdcss::RDCSS_DESCRIPTOR;
 use crate::thread_local::ThreadLocal;
@@ -385,7 +385,7 @@ impl CasNDescriptorStatus {
 }
 
 struct AtomicEntry {
-    addr: AtomicCasWordAtomicAddress,
+    addr: AtomicAddress<AtomicCasWord>,
     exp: AtomicCasWord,
     new: AtomicCasWord,
 }
@@ -393,7 +393,7 @@ struct AtomicEntry {
 impl AtomicEntry {
     fn empty() -> Self {
         Self {
-            addr: AtomicCasWordAtomicAddress::empty(),
+            addr: AtomicAddress::empty(),
             exp: AtomicCasWord::null(),
             new: AtomicCasWord::null(),
         }

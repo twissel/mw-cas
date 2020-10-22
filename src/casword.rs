@@ -143,18 +143,19 @@ impl AtomicCasWord {
     }
 }
 
-pub struct AtomicCasWordAtomicAddress(AtomicPtr<AtomicCasWord>);
+pub struct AtomicAddress<T>(AtomicPtr<T>);
 
-impl AtomicCasWordAtomicAddress {
+impl<T> AtomicAddress<T> {
     pub fn empty() -> Self {
         Self(AtomicPtr::default())
     }
 
-    pub fn store(&self, ptr: &AtomicCasWord) {
+    pub fn store(&self, ptr: &T) {
         self.0.store(ptr as *const _ as *mut _, Ordering::SeqCst);
     }
 
-    pub fn load<'a>(&self) -> &'a AtomicCasWord {
+    // TODO: make this function unsafe
+    pub fn load<'a>(&self) -> &'a T {
         let ptr = self.0.load(Ordering::SeqCst);
         unsafe { &*ptr }
     }
