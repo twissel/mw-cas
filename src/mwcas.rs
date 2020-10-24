@@ -1,79 +1,39 @@
-use self::traits::Atom;
-use crate::casword::{AtomicAddress, AtomicCasWord};
-use crate::casword::{CasWord, SeqNumber};
-use crate::rdcss::RDCSS_DESCRIPTOR;
-use crate::thread_local::ThreadLocal;
+pub use crate::atomic::Atomic;
+use crate::{
+    atomic::{AtomicAddress, AtomicBits, Bits, Word},
+    rdcss::RDCSS_DESCRIPTOR,
+    sequence_number::SeqNumber,
+    thread_local::ThreadLocal,
+};
 use arrayvec::ArrayVec;
-use crossbeam_epoch::{Guard, Owned, Pointer, Shared};
 use crossbeam_utils::{Backoff, CachePadded};
 use once_cell::sync::Lazy;
-use std::marker::PhantomData;
 use std::sync::atomic::{fence, AtomicUsize as StdAtomicUsize, Ordering};
 
-static CASN_DESCRIPTOR: Lazy<CasNDescriptor> = Lazy::new(|| CasNDescriptor::new());
+pub(crate) static CASN_DESCRIPTOR: Lazy<CasNDescriptor> =
+    Lazy::new(|| CasNDescriptor::new());
 
-pub struct Atomic<T> {
-    data: AtomicCasWord,
-    _marker: PhantomData<*mut T>,
-}
 
-impl<T> Atomic<T> {
-    pub fn new(t: T) -> Self {
-        let ptr = Box::into_raw(Box::new(t));
-        Self {
-            data: AtomicCasWord::from_usize(ptr as usize),
-            _marker: PhantomData,
-        }
-    }
-
-    pub fn load<'g>(&self, _guard: &'g Guard) -> Shared<'g, T> {
-        Shared::from(self.load_word())
-    }
-
-    pub unsafe fn into_owned(self) -> Owned<T> {
-        Owned::from_usize(self.data.into_inner())
-    }
-}
-
-unsafe impl<T: Send + Sync> Send for Atomic<T> {}
-unsafe impl<T: Send + Sync> Sync for Atomic<T> {}
-
-pub struct AtomicUsize {
-    data: AtomicCasWord,
-}
-
-impl AtomicUsize {
-    pub fn new(t: usize) -> Self {
-        Self {
-            data: AtomicCasWord::from_usize(t),
-        }
-    }
-
-    pub fn load(&self) -> usize {
-        self.load_word().into()
-    }
-}
-
-pub unsafe fn cas2<A0, A1>(
-    addr0: &A0,
-    addr1: &A1,
-    exp0: <A0 as traits::Atom>::Word,
-    exp1: <A1 as traits::Atom>::Word,
-    new0: <A0 as traits::Atom>::Word,
-    new1: <A1 as traits::Atom>::Word,
+pub unsafe fn cas2<T0, T1>(
+    addr0: &Atomic<T0>,
+    addr1: &Atomic<T1>,
+    exp0: T0,
+    exp1: T1,
+    new0: T0,
+    new1: T1,
 ) -> bool
 where
-    for<'a> A0: traits::Atom<'a>,
-    for<'a> A1: traits::Atom<'a>,
+    T0: Word,
+    T1: Word,
 {
     let entry0 = Entry {
-        addr: addr0.as_atomic_cas_word(),
+        addr: addr0.as_atomic_bits(),
         exp: exp0.into(),
         new: new0.into(),
     };
 
     let entry1 = Entry {
-        addr: addr1.as_atomic_cas_word(),
+        addr: addr1.as_atomic_bits(),
         exp: exp1.into(),
         new: new1.into(),
     };
@@ -83,13 +43,9 @@ where
     CASN_DESCRIPTOR.help(descriptor_ptr, false)
 }
 
-pub unsafe fn cas_n<A>(
-    addresses: &[&A],
-    expected: &[<A as traits::Atom>::Word],
-    new: &[<A as traits::Atom>::Word],
-) -> bool
+pub unsafe fn cas_n<T>(addresses: &[&Atomic<T>], expected: &[T], new: &[T]) -> bool
 where
-    for<'a> A: traits::Atom<'a>,
+    T: Word,
 {
     assert_eq!(addresses.len(), expected.len());
     assert_eq!(expected.len(), new.len());
@@ -97,7 +53,7 @@ where
     let mut entries = ArrayVec::<[Entry<'_>; MAX_ENTRIES]>::new();
     for ((addr, exp), new) in addresses.iter().zip(expected).zip(new) {
         let entry = Entry {
-            addr: addr.as_atomic_cas_word(),
+            addr: addr.as_atomic_bits(),
             exp: (*exp).into(),
             new: (*new).into(),
         };
@@ -107,19 +63,20 @@ where
     CASN_DESCRIPTOR.help(descriptor_ptr, false)
 }
 
-struct CasNDescriptor {
+pub(crate) struct CasNDescriptor {
     map: ThreadLocal<CachePadded<ThreadCasNDescriptor>>,
 }
 
 impl CasNDescriptor {
-    const MARK: usize = 2;
+    pub const MARK: usize = 2;
+
     pub fn new() -> Self {
         Self {
             map: ThreadLocal::new(),
         }
     }
 
-    pub fn make_descriptor(&'static self, entries: &mut [Entry]) -> CasWord {
+    pub fn make_descriptor(&'static self, entries: &mut [Entry]) -> Bits {
         let (tid, per_thread_descriptor) = CASN_DESCRIPTOR
             .map
             .get_or_insert_with(|| CachePadded::new(ThreadCasNDescriptor::empty()));
@@ -139,18 +96,18 @@ impl CasNDescriptor {
             .seq_number();
 
         // create a ptr for descriptor
-        CasWord::new_descriptor_ptr(tid, current_seq_num).with_mark(Self::MARK)
+        Bits::new_descriptor_ptr(tid, current_seq_num).with_mark(Self::MARK)
     }
 
     fn try_snapshot(
         &'static self,
-        descriptor_ptr: CasWord,
+        descriptor_ptr: Bits,
     ) -> Result<ThreadCasNDescriptorSnapshot, ()> {
         let thread_descriptor = self.map.get_for_thread(descriptor_ptr.tid()).unwrap();
         thread_descriptor.try_snapshot(descriptor_ptr.seq())
     }
 
-    pub fn help(&'static self, descriptor_ptr: CasWord, help_other: bool) -> bool {
+    pub fn help(&'static self, descriptor_ptr: Bits, help_other: bool) -> bool {
         let descriptor_seq = descriptor_ptr.seq();
 
         // try to snapshot descriptor we was helping
@@ -165,7 +122,7 @@ impl CasNDescriptor {
                         Err(_) => {
                             assert!(help_other);
                             return false;
-                        }
+                        },
                     };
                 if descriptor_current_status.status() == CasNDescriptorStatus::UNDECIDED {
                     let mut new_status = CasNDescriptorStatus::succeeded(descriptor_seq);
@@ -183,7 +140,9 @@ impl CasNDescriptor {
                                 descriptor_ptr,
                             );
 
-                            if swapped.mark() == CasNDescriptor::MARK && swapped != descriptor_ptr {
+                            if swapped.mark() == CasNDescriptor::MARK
+                                && swapped != descriptor_ptr
+                            {
                                 if backoff.is_completed() {
                                     self.help(swapped, true);
                                 } else {
@@ -208,7 +167,7 @@ impl CasNDescriptor {
                         Err(()) => {
                             assert!(help_other);
                             return false;
-                        }
+                        },
                     };
 
                 let succeeded =
@@ -218,12 +177,12 @@ impl CasNDescriptor {
                     let _ = entry.addr.compare_exchange(descriptor_ptr, new);
                 }
                 succeeded
-            }
+            },
             Err(_) => {
                 assert!(help_other);
                 // nothing to do, thread we was trying to help, already finished this operation.
                 false
-            }
+            },
         }
     }
 }
@@ -261,7 +220,10 @@ impl ThreadCasNDescriptor {
             .store(CasNDescriptorStatus::undecided(seq_num), Ordering::SeqCst)
     }
 
-    fn try_snapshot(&self, seq_num: SeqNumber) -> Result<ThreadCasNDescriptorSnapshot, ()> {
+    fn try_snapshot(
+        &self,
+        seq_num: SeqNumber,
+    ) -> Result<ThreadCasNDescriptorSnapshot, ()> {
         let current_seq_num = self.status.load(Ordering::SeqCst).seq_number();
         if current_seq_num == seq_num {
             let num_entries = self.num_entries.load(Ordering::Relaxed);
@@ -287,7 +249,7 @@ impl ThreadCasNDescriptor {
     }
 
     fn store_entries(&self, entries: &mut [Entry<'_>]) {
-        entries.sort_by_key(|e| e.addr as *const AtomicCasWord);
+        entries.sort_by_key(|e| e.addr as *const AtomicBits);
         for (atomic_entry, entry) in self.entries.iter().zip(&*entries) {
             atomic_entry.store(entry);
         }
@@ -301,7 +263,7 @@ struct ThreadCasNDescriptorSnapshot<'a> {
 }
 
 impl ThreadCasNDescriptorSnapshot<'_> {
-    fn try_read_status(&self, descriptor_ptr: CasWord) -> Result<CasNDescriptorStatus, ()> {
+    fn try_read_status(&self, descriptor_ptr: Bits) -> Result<CasNDescriptorStatus, ()> {
         let status = self.status.load(Ordering::SeqCst);
         if status.seq_number() == descriptor_ptr.seq() {
             Ok(status)
@@ -310,7 +272,11 @@ impl ThreadCasNDescriptorSnapshot<'_> {
         }
     }
 
-    fn cas_status(&self, expected_status: CasNDescriptorStatus, new_status: CasNDescriptorStatus) {
+    fn cas_status(
+        &self,
+        expected_status: CasNDescriptorStatus,
+        new_status: CasNDescriptorStatus,
+    ) {
         assert_eq!(expected_status.status(), CasNDescriptorStatus::UNDECIDED);
         let current_status = self.status.load(Ordering::SeqCst);
         if current_status == expected_status {
@@ -355,10 +321,10 @@ impl AtomicCasNDescriptorStatus {
 pub struct CasNDescriptorStatus(usize);
 
 impl CasNDescriptorStatus {
-    pub const UNDECIDED: usize = 0;
-    pub const SUCCEEDED: usize = 1;
     pub const FAILED: usize = 2;
     const NUM_STATUS_BITS: usize = 8;
+    pub const SUCCEEDED: usize = 1;
+    pub const UNDECIDED: usize = 0;
 
     fn undecided(seq_num: SeqNumber) -> Self {
         let seq_num = seq_num.as_usize() << Self::NUM_STATUS_BITS;
@@ -394,17 +360,17 @@ impl CasNDescriptorStatus {
 }
 
 struct AtomicEntry {
-    addr: AtomicAddress<AtomicCasWord>,
-    exp: AtomicCasWord,
-    new: AtomicCasWord,
+    addr: AtomicAddress<AtomicBits>,
+    exp: AtomicBits,
+    new: AtomicBits,
 }
 
 impl AtomicEntry {
     fn empty() -> Self {
         Self {
             addr: AtomicAddress::empty(),
-            exp: AtomicCasWord::null(),
-            new: AtomicCasWord::null(),
+            exp: AtomicBits::empty(),
+            new: AtomicBits::empty(),
         }
     }
 
@@ -422,92 +388,44 @@ impl AtomicEntry {
     }
 }
 
-struct Entry<'a> {
-    addr: &'a AtomicCasWord,
-    exp: CasWord,
-    new: CasWord,
-}
-
-pub mod traits {
-    use crate::casword::{AtomicCasWord, CasWord};
-    use crate::mwcas::{AtomicUsize, CasNDescriptor, CASN_DESCRIPTOR};
-    use crate::rdcss::RDCSS_DESCRIPTOR;
-    use crate::Atomic;
-    use crossbeam_epoch::Shared;
-
-    pub trait Atom<'a>: super::sealed::Sealed {
-        type Word: Into<CasWord> + From<CasWord> + Copy;
-
-        fn as_atomic_cas_word(&self) -> &AtomicCasWord;
-
-        fn load_word(&self) -> CasWord {
-            loop {
-                let curr = RDCSS_DESCRIPTOR.read(self.as_atomic_cas_word());
-                if curr.mark() == CasNDescriptor::MARK {
-                    CASN_DESCRIPTOR.help(curr, true);
-                } else {
-                    return curr;
-                }
-            }
-        }
-    }
-
-    impl<'a, T: 'a> Atom<'a> for Atomic<T> {
-        type Word = Shared<'a, T>;
-
-        fn as_atomic_cas_word(&self) -> &AtomicCasWord {
-            &self.data
-        }
-    }
-
-    impl Atom<'_> for AtomicUsize {
-        type Word = usize;
-
-        fn as_atomic_cas_word(&self) -> &AtomicCasWord {
-            &self.data
-        }
-    }
-}
-
-mod sealed {
-    pub trait Sealed {}
-
-    impl<T> Sealed for super::Atomic<T> {}
-
-    impl Sealed for super::AtomicUsize {}
+pub(crate) struct Entry<'a> {
+    addr: &'a AtomicBits,
+    exp: Bits,
+    new: Bits,
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
-    use crossbeam_epoch::{pin, Owned};
+    use crossbeam_epoch::{pin, Owned, Shared};
     use std::sync::Arc;
 
     #[test]
     fn test_mcas() {
         let g = pin();
-        let atom0 = Atomic::new(0);
-        let exp0 = atom0.load(&g);
+        let atom0 = Atomic::new(std::ptr::null());
+        let exp0 = atom0.load();
         let new0 = Owned::new(1).into_shared(&g);
 
-        let atom1 = Atomic::new(0);
-        let exp1 = atom1.load(&g);
+        let atom1 = Atomic::new(std::ptr::null());
+        let exp1 = atom1.load();
         let new1 = Owned::new(1).into_shared(&g);
-        let succeeded = unsafe { cas2(&atom0, &atom1, exp0, exp1, new0, new1) };
+        let succeeded =
+            unsafe { cas2(&atom0, &atom1, exp0, exp1, new0.as_raw(), new1.as_raw()) };
         assert!(succeeded);
-        let new0 = atom0.load(&g);
-        let new1 = atom1.load(&g);
+        let new0 = atom0.load();
+        let new1 = atom1.load();
         unsafe {
-            assert_eq!(new0.as_ref().unwrap(), &1);
-            assert_eq!(new1.as_ref().unwrap(), &1);
+            assert_eq!(&*new0, &1);
+            assert_eq!(&*new1, &1);
         }
 
         let succeeded = unsafe { cas2(&atom0, &atom1, exp0, exp1, new0, new1) };
-        let curr0 = atom0.load(&g);
-        let curr1 = atom0.load(&g);
+        let curr0 = atom0.load();
+        let curr1 = atom0.load();
         unsafe {
-            assert_eq!(curr0.as_ref().unwrap(), &1);
-            assert_eq!(curr1.as_ref().unwrap(), &1);
+            assert_eq!(&*curr0, &1);
+            assert_eq!(&*curr1, &1);
         }
 
         assert!(!succeeded);
@@ -516,31 +434,36 @@ mod test {
     #[test]
     fn counter_test() {
         let mut handles = Vec::new();
-        let counter = Arc::new((Atomic::new(0), Atomic::new(0)));
+        let counter = Arc::new((
+            Atomic::<*const u64>::new(Box::into_raw(Box::new(0))),
+            Atomic::<*const u64>::new(Box::into_raw(Box::new(0))),
+        ));
         let max = 100_000;
         for _ in 0..8 {
             let counter = counter.clone();
             let h = std::thread::spawn(move || loop {
                 unsafe {
                     let g = crossbeam_epoch::pin();
-                    let curr_first_shared = counter.0.load(&g);
-                    let curr_second_shared = counter.1.load(&g);
+                    let curr_first_shared = Shared::from(counter.0.load() as *const _);
+                    let curr_second_shared = Shared::from(counter.1.load() as *const _);
                     let curr_first = curr_first_shared.deref();
                     let curr_second = curr_second_shared.deref();
                     if *curr_first == max {
                         break;
                     }
 
-                    let new_first = Owned::new(*curr_first + 1).into_shared(&g);
-                    let new_second = Owned::new(*curr_second + 1).into_shared(&g);
+                    let new_first: Shared<'_, u64> =
+                        Owned::<u64>::new(*curr_first + 1).into_shared(&g);
+                    let new_second: Shared<'_, u64> =
+                        Owned::<u64>::new(*curr_second + 1).into_shared(&g);
 
                     if cas2(
                         &counter.0,
                         &counter.1,
-                        curr_first_shared,
-                        curr_second_shared,
-                        new_first,
-                        new_second,
+                        curr_first_shared.as_raw(),
+                        curr_second_shared.as_raw(),
+                        new_first.as_raw(),
+                        new_second.as_raw(),
                     ) {
                         g.defer_destroy(curr_first_shared);
                         g.defer_destroy(curr_second_shared);
@@ -563,11 +486,13 @@ mod test {
             Err(_) => panic!(),
         };
         unsafe {
-            let first = counter.0.into_owned();
+            let first = counter.0.load();
             assert_eq!(*first, max);
+            Box::from_raw(first as *mut u32);
 
-            let second = counter.1.into_owned();
+            let second = counter.1.load();
             assert_eq!(*second, max);
+            Box::from_raw(second as *mut u32);
         }
     }
 }

@@ -1,5 +1,7 @@
-use std::mem::MaybeUninit;
-use std::sync::atomic::{AtomicPtr, Ordering};
+use std::{
+    mem::MaybeUninit,
+    sync::atomic::{AtomicPtr, Ordering},
+};
 
 enum ArrayOrKV<V> {
     Array([AtomicPtr<ArrayOrKV<V>>; 64]),
@@ -32,18 +34,19 @@ impl<V> Drop for Uint14HashMap<V> {
                     match *b {
                         ArrayOrKV::Array(second_level) => {
                             for second_level_el in &second_level[..] {
-                                let second_level_ptr = second_level_el.load(Ordering::Relaxed);
+                                let second_level_ptr =
+                                    second_level_el.load(Ordering::Relaxed);
                                 if !second_level_ptr.is_null() {
                                     let sb = Box::from_raw(second_level_ptr);
                                     match *sb {
                                         ArrayOrKV::Array(_) => {
                                             panic!("Second level element is array")
-                                        }
+                                        },
                                         ArrayOrKV::KV { .. } => (),
                                     }
                                 }
                             }
-                        }
+                        },
                         ArrayOrKV::KV { .. } => (),
                     }
                 }
@@ -62,7 +65,8 @@ where
         for elem in &mut data[..] {
             *elem = MaybeUninit::new(AtomicPtr::default());
         }
-        let data = unsafe { std::mem::transmute::<_, [AtomicPtr<ArrayOrKV<V>>; 256]>(data) };
+        let data =
+            unsafe { std::mem::transmute::<_, [AtomicPtr<ArrayOrKV<V>>; 256]>(data) };
         Self { array: data }
     }
 
@@ -96,11 +100,11 @@ where
                             } else {
                                 try_expand_at(atom_ptr, ptr);
                             }
-                        }
+                        },
                         ArrayOrKV::Array(ref array) => {
                             atom_ptr = &array[scd_lvl_idx(key)];
                             continue;
-                        }
+                        },
                     }
                 }
             }
@@ -125,14 +129,17 @@ where {
                     ArrayOrKV::Array(ref array) => {
                         atom_ptr = &array[scd_lvl_idx(key)];
                         continue;
-                    }
+                    },
                 }
             }
         }
     }
 }
 
-fn try_expand_at<V>(at: &AtomicPtr<ArrayOrKV<V>>, curr: *mut ArrayOrKV<V>) -> *mut ArrayOrKV<V> {
+fn try_expand_at<V>(
+    at: &AtomicPtr<ArrayOrKV<V>>,
+    curr: *mut ArrayOrKV<V>,
+) -> *mut ArrayOrKV<V> {
     unsafe {
         let mut new_lvl: [MaybeUninit<AtomicPtr<ArrayOrKV<V>>>; 64] =
             MaybeUninit::uninit().assume_init();
@@ -152,7 +159,7 @@ fn try_expand_at<V>(at: &AtomicPtr<ArrayOrKV<V>>, curr: *mut ArrayOrKV<V>) -> *m
             Err(e) => {
                 let _ = Box::from_raw(new_lvl_ptr);
                 e
-            }
+            },
         }
     }
 }

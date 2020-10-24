@@ -80,8 +80,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::ThreadLocal;
-    use std::sync::Arc;
-    use std::thread;
+    use std::{sync::Arc, thread};
 
     #[test]
     fn it_works() {
