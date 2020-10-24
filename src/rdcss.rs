@@ -9,7 +9,7 @@ use once_cell::sync::Lazy;
 use std::sync::atomic::{fence, Ordering};
 
 pub(crate) static RDCSS_DESCRIPTOR: Lazy<RDCSSDescriptor> =
-    Lazy::new(|| RDCSSDescriptor::new());
+    Lazy::new(RDCSSDescriptor::new);
 
 struct ThreadRDCSSDescriptor {
     status_address: AtomicAddress<AtomicCasNDescriptorStatus>,
@@ -143,7 +143,7 @@ impl RDCSSDescriptor {
                 return current;
             }
             let installed = data_location.compare_exchange(expected_data_ptr, des_ptr);
-            if let Ok(_) = installed {
+            if installed.is_ok() {
                 self.rdcss_help(des_ptr);
                 return expected_data_ptr;
             } else {

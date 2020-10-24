@@ -11,9 +11,9 @@ use once_cell::sync::Lazy;
 use std::sync::atomic::{fence, AtomicUsize as StdAtomicUsize, Ordering};
 
 pub(crate) static CASN_DESCRIPTOR: Lazy<CasNDescriptor> =
-    Lazy::new(|| CasNDescriptor::new());
+    Lazy::new(CasNDescriptor::new);
 
-
+#[allow(clippy::missing_safety_doc)]
 pub unsafe fn cas2<T0, T1>(
     addr0: &Atomic<T0>,
     addr1: &Atomic<T1>,
@@ -43,6 +43,7 @@ where
     CASN_DESCRIPTOR.help(descriptor_ptr, false)
 }
 
+#[allow(clippy::missing_safety_doc)]
 pub unsafe fn cas_n<T>(addresses: &[&Atomic<T>], expected: &[T], new: &[T]) -> bool
 where
     T: Word,
@@ -147,13 +148,11 @@ impl CasNDescriptor {
                                     backoff.spin();
                                 }
                                 continue 'install_loop;
+                            } else if swapped != entry_exp {
+                                new_status = new_status.set_failed();
+                                break 'entry_loop;
                             } else {
-                                if swapped != entry_exp {
-                                    new_status = new_status.set_failed();
-                                    break 'entry_loop;
-                                } else {
-                                    break 'install_loop;
-                                }
+                                break 'install_loop;
                             }
                         }
                     }
@@ -349,12 +348,12 @@ impl CasNDescriptorStatus {
         Self::failed(self.seq_number())
     }
 
-    fn seq_number(&self) -> SeqNumber {
+    fn seq_number(self) -> SeqNumber {
         let seq_num = self.0 >> Self::NUM_STATUS_BITS;
         SeqNumber::from_usize(seq_num)
     }
 
-    fn status(&self) -> usize {
+    fn status(self) -> usize {
         self.0 & ((1 << Self::NUM_STATUS_BITS) - 1)
     }
 

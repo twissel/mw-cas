@@ -6,7 +6,7 @@ pub struct SeqNumber(usize);
 impl SeqNumber {
     pub const LENGTH: usize = 48;
 
-    pub fn inc(&self) -> SeqNumber {
+    pub fn inc(self) -> SeqNumber {
         Self(self.0 + 1)
     }
 }
@@ -19,6 +19,7 @@ impl SeqNumberGenerator {
         Self(AtomicUsize::new(0))
     }
 
+    #[allow(clippy::trivially_copy_pass_by_ref)]
     pub fn inc(&self, store_ordering: Ordering) -> SeqNumber {
         let new = self.0.load(Ordering::Relaxed) + 1;
         self.0.store(new, store_ordering);
@@ -31,7 +32,7 @@ impl SeqNumberGenerator {
 }
 
 impl SeqNumber {
-    pub fn as_usize(&self) -> usize {
+    pub fn as_usize(self) -> usize {
         self.0
     }
 

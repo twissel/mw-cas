@@ -107,13 +107,13 @@ impl Bits {
         Self(tid | (seq.as_usize() << Self::NUM_RESERVED_BITS))
     }
 
-    pub fn tid(&self) -> ThreadId {
+    pub fn tid(self) -> ThreadId {
         ThreadId::from_u16(
             (self.0 >> (SeqNumber::LENGTH + Self::NUM_RESERVED_BITS)) as u16,
         )
     }
 
-    pub fn seq(&self) -> SeqNumber {
+    pub fn seq(self) -> SeqNumber {
         let mask = (1usize << (SeqNumber::LENGTH + Self::NUM_RESERVED_BITS)) - 1;
         let seq = (self.0 & mask) >> Self::NUM_RESERVED_BITS;
         SeqNumber::from_usize(seq)

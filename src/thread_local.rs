@@ -38,7 +38,7 @@ impl ThreadId {
         panic!("no free slots left, all {} slots are used", MAX_THREADS);
     }
 
-    pub fn as_u16(&self) -> u16 {
+    pub fn as_u16(self) -> u16 {
         self.0
     }
 
