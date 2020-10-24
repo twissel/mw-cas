@@ -77,9 +77,7 @@ impl CasNDescriptor {
     }
 
     pub fn make_descriptor(&'static self, entries: &mut [Entry]) -> Bits {
-        let (tid, per_thread_descriptor) = CASN_DESCRIPTOR
-            .map
-            .get_or_insert_with(|| CachePadded::new(ThreadCasNDescriptor::empty()));
+        let (tid, per_thread_descriptor) = CASN_DESCRIPTOR.map.get();
 
         // invalidate current descriptor
         per_thread_descriptor.inc_seq();
@@ -103,7 +101,7 @@ impl CasNDescriptor {
         &'static self,
         descriptor_ptr: Bits,
     ) -> Result<ThreadCasNDescriptorSnapshot, ()> {
-        let thread_descriptor = self.map.get_for_thread(descriptor_ptr.tid()).unwrap();
+        let thread_descriptor = self.map.get_for_thread(descriptor_ptr.tid());
         thread_descriptor.try_snapshot(descriptor_ptr.seq())
     }
 
@@ -196,7 +194,7 @@ struct ThreadCasNDescriptor {
 }
 
 impl ThreadCasNDescriptor {
-    fn empty() -> Self {
+    fn new() -> Self {
         Self {
             status: AtomicCasNDescriptorStatus::new(),
             num_entries: StdAtomicUsize::new(0),
@@ -254,6 +252,12 @@ impl ThreadCasNDescriptor {
             atomic_entry.store(entry);
         }
         self.num_entries.store(entries.len(), Ordering::Relaxed);
+    }
+}
+
+impl Default for ThreadCasNDescriptor {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

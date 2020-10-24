@@ -22,11 +22,16 @@ impl ThreadId {
         for (index, slot) in (&*THREAD_IDS).iter().enumerate() {
             let occupied = slot.load(Ordering::SeqCst);
             if !occupied {
-                match slot.compare_exchange(false, true, Ordering::SeqCst, Ordering::Relaxed) {
+                match slot.compare_exchange(
+                    false,
+                    true,
+                    Ordering::SeqCst,
+                    Ordering::Relaxed,
+                ) {
                     Ok(_) => return RegisteredThreadId(index as _),
                     Err(_) => {
                         continue;
-                    }
+                    },
                 }
             }
         }
@@ -71,7 +76,6 @@ where
         // safety: safe as only one thread has access to V
         (id, &*self.map.get(id.0 as usize).unwrap())
     }
-
 
     pub fn get_for_thread(&self, thread_id: ThreadId) -> &V
     where

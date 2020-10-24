@@ -52,6 +52,12 @@ impl ThreadRDCSSDescriptor {
     }
 }
 
+impl Default for ThreadRDCSSDescriptor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 struct ThreadRDCSSDescriptorSnapshot<'g> {
     status_location: &'static AtomicCasNDescriptorStatus,
     data_location: &'g AtomicBits,
@@ -81,9 +87,7 @@ impl RDCSSDescriptor {
         expected_data: Bits,
         new_kcas_ptr: Bits,
     ) -> Bits {
-        let (thread_id, per_thread_descriptor) = self
-            .per_thread_descriptors
-            .get_or_insert_with(|| CachePadded::new(ThreadRDCSSDescriptor::new()));
+        let (thread_id, per_thread_descriptor) = self.per_thread_descriptors.get();
 
         per_thread_descriptor.seq_number.inc(Ordering::Relaxed);
         fence(Ordering::Release);
@@ -167,10 +171,7 @@ impl RDCSSDescriptor {
     fn try_snapshot(&self, des: Bits) -> Result<ThreadRDCSSDescriptorSnapshot, ()> {
         let tid = des.tid();
         let seq = des.seq();
-        let curr_thread_descriptor = self
-            .per_thread_descriptors
-            .get_for_thread(tid)
-            .expect("Missing thread descriptor");
+        let curr_thread_descriptor = self.per_thread_descriptors.get_for_thread(tid);
         if seq != curr_thread_descriptor.seq_number.current(Ordering::Acquire) {
             Err(())
         } else {
