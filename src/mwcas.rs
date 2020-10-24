@@ -2,13 +2,13 @@ use self::traits::Atom;
 use crate::casword::{AtomicAddress, AtomicCasWord};
 use crate::casword::{CasWord, SeqNumber};
 use crate::rdcss::RDCSS_DESCRIPTOR;
-use crate::thread_local::ThreadLocal;
 use arrayvec::ArrayVec;
 use crossbeam_epoch::{Guard, Owned, Pointer, Shared};
-use crossbeam_utils::{Backoff, CachePadded};
+use crossbeam_utils::{Backoff};
 use once_cell::sync::Lazy;
 use std::marker::PhantomData;
 use std::sync::atomic::{fence, AtomicUsize as StdAtomicUsize, Ordering};
+use crate::thread_local::ThreadLocal;
 
 static CASN_DESCRIPTOR: Lazy<CasNDescriptor> = Lazy::new(|| CasNDescriptor::new());
 
@@ -108,21 +108,21 @@ where
 }
 
 struct CasNDescriptor {
-    map: ThreadLocal<CachePadded<ThreadCasNDescriptor>>,
+    per_thread_descriptors: ThreadLocal<ThreadCasNDescriptor>,
 }
 
 impl CasNDescriptor {
     const MARK: usize = 2;
     pub fn new() -> Self {
         Self {
-            map: ThreadLocal::new(),
+            per_thread_descriptors: ThreadLocal::new(),
         }
     }
 
     pub fn make_descriptor(&'static self, entries: &mut [Entry]) -> CasWord {
         let (tid, per_thread_descriptor) = CASN_DESCRIPTOR
-            .map
-            .get_or_insert_with(|| CachePadded::new(ThreadCasNDescriptor::empty()));
+            .per_thread_descriptors
+            .get();
 
         // invalidate current descriptor
         per_thread_descriptor.inc_seq();
@@ -146,7 +146,9 @@ impl CasNDescriptor {
         &'static self,
         descriptor_ptr: CasWord,
     ) -> Result<ThreadCasNDescriptorSnapshot, ()> {
-        let thread_descriptor = self.map.get_for_thread(descriptor_ptr.tid()).unwrap();
+        let thread_descriptor = self
+            .per_thread_descriptors
+            .get_for_thread(descriptor_ptr.tid());
         thread_descriptor.try_snapshot(descriptor_ptr.seq())
     }
 
@@ -237,7 +239,7 @@ struct ThreadCasNDescriptor {
 }
 
 impl ThreadCasNDescriptor {
-    fn empty() -> Self {
+    fn new() -> Self {
         Self {
             status: AtomicCasNDescriptorStatus::new(),
             num_entries: StdAtomicUsize::new(0),
@@ -292,6 +294,12 @@ impl ThreadCasNDescriptor {
             atomic_entry.store(entry);
         }
         self.num_entries.store(entries.len(), Ordering::Relaxed);
+    }
+}
+
+impl Default for ThreadCasNDescriptor {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

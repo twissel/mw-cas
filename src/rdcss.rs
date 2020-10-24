@@ -1,10 +1,10 @@
-use crate::mwcas::{CasNDescriptorStatus, AtomicCasNDescriptorStatus};
-use crate::casword::{AtomicCasWord, AtomicAddress};
+use crate::casword::{AtomicAddress, AtomicCasWord};
 use crate::casword::{CasWord, SeqNumberGenerator};
-use crate::thread_local::ThreadLocal;
+use crate::mwcas::{AtomicCasNDescriptorStatus, CasNDescriptorStatus};
+use crate::thread_local::{MAX_THREADS, THREAD_ID};
 use crossbeam_utils::{Backoff, CachePadded};
 use once_cell::sync::Lazy;
-use std::sync::atomic::{Ordering, fence};
+use std::sync::atomic::{fence, Ordering};
 
 pub(crate) static RDCSS_DESCRIPTOR: Lazy<RDCSSDescriptor> = Lazy::new(|| RDCSSDescriptor::new());
 
@@ -31,9 +31,11 @@ impl ThreadRDCSSDescriptor {
 
     fn snapshot(&self) -> ThreadRDCSSDescriptorSnapshot {
         unsafe {
-            let status_location: &AtomicCasNDescriptorStatus = self.status_address.load(Ordering::Relaxed);
+            let status_location: &AtomicCasNDescriptorStatus =
+                self.status_address.load(Ordering::Relaxed);
             let data_location: &AtomicCasWord = self.data_address.load(Ordering::Relaxed);
-            let expected_status: CasNDescriptorStatus = self.expected_status_cell.load(Ordering::Relaxed);
+            let expected_status: CasNDescriptorStatus =
+                self.expected_status_cell.load(Ordering::Relaxed);
             let expected_data_ptr = self.expected_ptr_cell.load(Ordering::Relaxed);
             let kcas_ptr = self.kcas_ptr_cell.load(Ordering::Relaxed);
             ThreadRDCSSDescriptorSnapshot {
@@ -56,7 +58,7 @@ struct ThreadRDCSSDescriptorSnapshot<'g> {
 }
 
 pub struct RDCSSDescriptor {
-    per_thread_descriptors: ThreadLocal<CachePadded<ThreadRDCSSDescriptor>>,
+    per_thread_descriptors: Vec<CachePadded<ThreadRDCSSDescriptor>>,
 }
 
 impl RDCSSDescriptor {
@@ -64,7 +66,9 @@ impl RDCSSDescriptor {
 
     fn new() -> Self {
         Self {
-            per_thread_descriptors: ThreadLocal::new(),
+            per_thread_descriptors: (0..MAX_THREADS)
+                .map(|_| CachePadded::new(ThreadRDCSSDescriptor::new()))
+                .collect(),
         }
     }
 
@@ -76,14 +80,18 @@ impl RDCSSDescriptor {
         expected_data: CasWord,
         new_kcas_ptr: CasWord,
     ) -> CasWord {
-        let (thread_id, per_thread_descriptor) = self
+        let thread_id = THREAD_ID.with(|id| *id);
+        let per_thread_descriptor: &'static CachePadded<ThreadRDCSSDescriptor> = self
             .per_thread_descriptors
-            .get_or_insert_with(|| CachePadded::new(ThreadRDCSSDescriptor::new()));
+            .get(thread_id.as_u16() as usize)
+            .unwrap();
 
         per_thread_descriptor.seq_number.inc(Ordering::Relaxed);
         fence(Ordering::Release);
 
-        per_thread_descriptor.status_address.store(status_ref, Ordering::Relaxed);
+        per_thread_descriptor
+            .status_address
+            .store(status_ref, Ordering::Relaxed);
         per_thread_descriptor
             .data_address
             .store(data_ref, Ordering::Relaxed);
@@ -91,8 +99,12 @@ impl RDCSSDescriptor {
         per_thread_descriptor
             .expected_status_cell
             .store(expected_status, Ordering::Relaxed);
-        per_thread_descriptor.expected_ptr_cell.store(expected_data, Ordering::Relaxed);
-        per_thread_descriptor.kcas_ptr_cell.store(new_kcas_ptr, Ordering::Relaxed);
+        per_thread_descriptor
+            .expected_ptr_cell
+            .store(expected_data, Ordering::Relaxed);
+        per_thread_descriptor
+            .kcas_ptr_cell
+            .store(new_kcas_ptr, Ordering::Relaxed);
 
         let new_seq = per_thread_descriptor.seq_number.inc(Ordering::Release);
         CasWord::new_descriptor_ptr(thread_id, new_seq).with_mark(Self::MARK)
@@ -156,9 +168,9 @@ impl RDCSSDescriptor {
     fn try_snapshot(&self, des: CasWord) -> Result<ThreadRDCSSDescriptorSnapshot, ()> {
         let tid = des.tid();
         let seq = des.seq();
-        let curr_thread_descriptor = self
+        let curr_thread_descriptor: &CachePadded<ThreadRDCSSDescriptor> = self
             .per_thread_descriptors
-            .get_for_thread(tid)
+            .get(tid.as_u16() as usize)
             .expect("Missing thread descriptor");
         if seq != curr_thread_descriptor.seq_number.current(Ordering::Acquire) {
             Err(())

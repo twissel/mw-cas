@@ -1,27 +1,36 @@
-mod hashmap;
-use hashmap::Uint14HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use crossbeam_utils::CachePadded;
+use once_cell::sync::Lazy;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-static NEXT_THREAD_ID: AtomicU64 = AtomicU64::new(1);
-
-// 14bit thread id
-#[derive(Debug, PartialEq, Eq, Copy, Clone)]
-pub struct ThreadId(u16);
-
-const U14_MAX: u64 = 16383;
+pub const MAX_THREADS: usize = 1024;
+static THREAD_IDS: Lazy<Vec<AtomicBool>> =
+    Lazy::new(|| (0..MAX_THREADS).map(|_| AtomicBool::new(false)).collect());
 
 thread_local! {
-       pub static THREAD_ID: ThreadId = ThreadId::new()
+       static REG_ID: RegisteredThreadId = ThreadId::register();
+       pub static THREAD_ID: ThreadId = ThreadId(REG_ID.with(|id| id.0));
 }
 
+// 14bit thread id
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub struct ThreadId(u16);
+
+pub struct RegisteredThreadId(u16);
+
 impl ThreadId {
-    pub fn new() -> Self {
-        let curr = NEXT_THREAD_ID.fetch_add(1, Ordering::Relaxed);
-        if curr >= U14_MAX - 1 {
-            panic!("More then 16.000 threads was created")
-        } else {
-            ThreadId(curr as u16)
+    fn register() -> RegisteredThreadId {
+        for (index, slot) in (&*THREAD_IDS).iter().enumerate() {
+            let occupied = slot.load(Ordering::SeqCst);
+            if !occupied {
+                match slot.compare_exchange(false, true, Ordering::SeqCst, Ordering::Relaxed) {
+                    Ok(_) => return RegisteredThreadId(index as _),
+                    Err(_) => {
+                        continue;
+                    }
+                }
+            }
         }
+        panic!("no free slots left, all {} slots are used", MAX_THREADS);
     }
 
     pub fn as_u16(&self) -> u16 {
@@ -33,80 +42,42 @@ impl ThreadId {
     }
 }
 
+impl Drop for RegisteredThreadId {
+    fn drop(&mut self) {
+        let ids = &*THREAD_IDS;
+        ids[self.0 as usize].store(false, Ordering::SeqCst);
+    }
+}
+
 pub struct ThreadLocal<V> {
-    map: Uint14HashMap<V>,
+    map: Vec<CachePadded<V>>,
 }
 
 impl<V> ThreadLocal<V>
 where
-    V: Send + 'static,
+    V: Send + 'static + Default,
 {
     pub fn new() -> Self {
         Self {
-            map: Uint14HashMap::new(),
+            map: (0..MAX_THREADS)
+                .map(|_| CachePadded::new(V::default()))
+                .collect(),
         }
     }
 
-    #[allow(dead_code)]
-    pub fn get(&self) -> Option<&V> {
-        let id = THREAD_ID.with(|id| id.0);
-
-        // safety: safe as only one thread has access to V
-        unsafe { self.map.get(id) }
-    }
-
-    pub fn get_or_insert_with<F>(&self, f: F) -> (ThreadId, &V)
-    where
-        F: FnOnce() -> V,
-    {
+    pub fn get(&self) -> (ThreadId, &V) {
         let id = THREAD_ID.with(|id| *id);
+
         // safety: safe as only one thread has access to V
-        let v = unsafe { self.map.get(id.0) };
-        match v {
-            Some(v) => (id, v),
-            None => (id, self.map.insert(id.0, f())),
-        }
+        (id, &*self.map.get(id.0 as usize).unwrap())
     }
 
-    pub fn get_for_thread(&self, thread_id: ThreadId) -> Option<&V>
+
+    pub fn get_for_thread(&self, thread_id: ThreadId) -> &V
     where
         V: Sync,
     {
         // safety: safe as V is Sync
-        unsafe { self.map.get(thread_id.0) }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::ThreadLocal;
-    use std::sync::Arc;
-    use std::thread;
-
-    #[test]
-    fn it_works() {
-        let mut handles = Vec::new();
-        let tls = Arc::new(ThreadLocal::<u64>::new());
-        let h = thread::spawn({
-            let tls = tls.clone();
-            move || {
-                let _ = tls.get_or_insert_with(|| 1);
-                assert_eq!(tls.get().unwrap(), &1);
-            }
-        });
-        handles.push(h);
-
-        let h = thread::spawn({
-            let tls = tls.clone();
-            move || {
-                let _ = tls.get_or_insert_with(|| 2);
-                assert_eq!(tls.get().unwrap(), &2);
-            }
-        });
-        handles.push(h);
-
-        for h in handles {
-            h.join().unwrap();
-        }
+        &*self.map.get(thread_id.0 as usize).unwrap()
     }
 }
