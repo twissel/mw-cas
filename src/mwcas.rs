@@ -6,12 +6,11 @@ use crate::{
     thread_local::ThreadLocal,
 };
 use arrayvec::ArrayVec;
-use crossbeam_utils::{Backoff, CachePadded};
+use crossbeam_utils::Backoff;
 use once_cell::sync::Lazy;
 use std::sync::atomic::{fence, AtomicUsize as StdAtomicUsize, Ordering};
 
-pub(crate) static CASN_DESCRIPTOR: Lazy<CasNDescriptor> =
-    Lazy::new(CasNDescriptor::new);
+pub(crate) static CASN_DESCRIPTOR: Lazy<CasNDescriptor> = Lazy::new(CasNDescriptor::new);
 
 #[allow(clippy::missing_safety_doc)]
 pub unsafe fn cas2<T0, T1>(
@@ -65,7 +64,7 @@ where
 }
 
 pub(crate) struct CasNDescriptor {
-    map: ThreadLocal<CachePadded<ThreadCasNDescriptor>>,
+    map: ThreadLocal<ThreadCasNDescriptor>,
 }
 
 impl CasNDescriptor {

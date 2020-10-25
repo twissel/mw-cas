@@ -4,7 +4,7 @@ use crate::{
     sequence_number::SeqNumberGenerator,
     thread_local::ThreadLocal,
 };
-use crossbeam_utils::{Backoff, CachePadded};
+use crossbeam_utils::Backoff;
 use once_cell::sync::Lazy;
 use std::sync::atomic::{fence, Ordering};
 
@@ -67,7 +67,7 @@ struct ThreadRDCSSDescriptorSnapshot<'g> {
 }
 
 pub struct RDCSSDescriptor {
-    per_thread_descriptors: ThreadLocal<CachePadded<ThreadRDCSSDescriptor>>,
+    per_thread_descriptors: ThreadLocal<ThreadRDCSSDescriptor>,
 }
 
 impl RDCSSDescriptor {
