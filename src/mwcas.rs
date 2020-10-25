@@ -16,6 +16,46 @@ use std::{
 
 pub(crate) static CASN_DESCRIPTOR: Lazy<CasNDescriptor> = Lazy::new(CasNDescriptor::new);
 
+pub struct CASN<'a> {
+    entries: ArrayVec<[Entry<'a>; MAX_ENTRIES]>,
+}
+
+impl<'a> CASN<'a> {
+    #[inline]
+    pub fn new() -> Self {
+        Self {
+            entries: ArrayVec::new(),
+        }
+    }
+
+    #[inline]
+    pub fn add<T: Word>(
+        &mut self,
+        addr: &'a Atomic<T>,
+        expected: T,
+        new: T,
+    ) -> Result<(), ()> {
+        let e = Entry {
+            addr: addr.as_atomic_bits(),
+            exp: expected.into(),
+            new: new.into(),
+        };
+        self.entries.try_push(e).map_err(|_| ())
+    }
+
+    #[inline]
+    pub fn add_unchecked<T: Word>(&mut self, addr: &'a Atomic<T>, expected: T, new: T) {
+        self.add(addr, expected, new).unwrap()
+    }
+
+    #[must_use]
+    #[allow(clippy::missing_safety_doc)]
+    pub unsafe fn exec(mut self) -> bool {
+        let descriptor_ptr = CASN_DESCRIPTOR.make_descriptor(&mut self.entries);
+        CASN_DESCRIPTOR.help(descriptor_ptr, false)
+    }
+}
+
 #[allow(clippy::missing_safety_doc)]
 pub unsafe fn cas2<T0, T1>(
     addr0: &Atomic<T0>,
@@ -29,21 +69,10 @@ where
     T0: Word,
     T1: Word,
 {
-    let entry0 = Entry {
-        addr: addr0.as_atomic_bits(),
-        exp: exp0.into(),
-        new: new0.into(),
-    };
-
-    let entry1 = Entry {
-        addr: addr1.as_atomic_bits(),
-        exp: exp1.into(),
-        new: new1.into(),
-    };
-
-    let mut entries = [entry0, entry1];
-    let descriptor_ptr = CASN_DESCRIPTOR.make_descriptor(&mut entries);
-    CASN_DESCRIPTOR.help(descriptor_ptr, false)
+    let mut cas_n = CASN::new();
+    cas_n.add_unchecked(addr0, exp0, new0);
+    cas_n.add_unchecked(addr1, exp1, new1);
+    cas_n.exec()
 }
 
 #[allow(clippy::missing_safety_doc)]
@@ -54,17 +83,11 @@ where
     assert_eq!(addresses.len(), expected.len());
     assert_eq!(expected.len(), new.len());
     assert!(addresses.len() <= MAX_ENTRIES);
-    let mut entries = ArrayVec::<[Entry<'_>; MAX_ENTRIES]>::new();
+    let mut cas_n = CASN::new();
     for ((addr, exp), new) in addresses.iter().zip(expected).zip(new) {
-        let entry = Entry {
-            addr: addr.as_atomic_bits(),
-            exp: (*exp).into(),
-            new: (*new).into(),
-        };
-        entries.push(entry);
+        cas_n.add_unchecked(*addr, *exp, *new);
     }
-    let descriptor_ptr = CASN_DESCRIPTOR.make_descriptor(&mut entries);
-    CASN_DESCRIPTOR.help(descriptor_ptr, false)
+    cas_n.exec()
 }
 
 pub(crate) struct CasNDescriptor {
@@ -187,7 +210,7 @@ impl CasNDescriptor {
     }
 }
 
-const MAX_ENTRIES: usize = 8;
+const MAX_ENTRIES: usize = 4;
 
 struct ThreadCasNDescriptor {
     pub entries: [AtomicEntry; MAX_ENTRIES],
@@ -228,8 +251,6 @@ impl ThreadCasNDescriptor {
         let current_seq_num = self.status.load(Ordering::SeqCst).seq_number();
         if current_seq_num == seq_num {
             let num_entries = self.num_entries.load(Ordering::Relaxed);
-
-            assert!(num_entries >= 2);
             let entries = self.entries[0..num_entries]
                 .iter()
                 .map(|atomic_entry| atomic_entry.load())

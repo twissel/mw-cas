@@ -8,7 +8,6 @@ edition = "2018"
 
 [dependencies]
 once_cell = "1.4.1"
-crossbeam-epoch = "0.8.2"
 crossbeam-utils = "0.7.2"
 arrayvec = "0.5.1"
 
@@ -18,6 +17,7 @@ arrayvec = "0.5.1"
 criterion = "0.3"
 rayon = "1.4.0"
 mimalloc = { version = "0.1", default-features = false }
+crossbeam-epoch = "0.8.2"
 rand = { version = "0.7",  features = ["small_rng"] }
 
 
@@ -26,5 +26,5 @@ debug = true
 
 
 [[bench]]
-name = "cas2"
+name = "casn"
 harness = false

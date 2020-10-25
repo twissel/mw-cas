@@ -3,7 +3,7 @@
 
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion, Throughput};
 use crossbeam_epoch::{self, pin, unprotected, Owned, Shared};
-use mw_cas::{cas2, Atomic};
+use mw_cas::{cas2, Atomic, CASN};
 use rand::{prelude::SliceRandom, rngs::SmallRng, thread_rng, Rng, SeedableRng};
 use std::sync::{
     atomic::{AtomicPtr, Ordering},
@@ -13,9 +13,10 @@ use std::sync::{
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-fn cas2_sum(
+fn casn_sum(
     atoms: Arc<Vec<Atomic<usize>>>,
     threads: usize,
+    num_els: usize,
     per_thread_attempts: usize,
 ) -> Vec<Atomic<usize>> {
     let mut handles = Vec::with_capacity(threads);
@@ -27,18 +28,14 @@ fn cas2_sum(
             let mut rng = SmallRng::from_rng(&mut thread_rng).unwrap();
             unsafe {
                 for _ in 0..per_thread_attempts {
-                    let first = atoms.choose(&mut rng).unwrap();
-                    let second = atoms.choose(&mut rng).unwrap();
-                    let first_current = first.load();
-                    let second_current = second.load();
-                    let success = cas2(
-                        first,
-                        second,
-                        first_current,
-                        second_current,
-                        first_current + 1,
-                        second_current + 1,
-                    );
+                    let els = atoms.choose_multiple(&mut rng, num_els);
+                    let mut cas_n = CASN::new();
+                    for el in els {
+                        let curr = el.load();
+                        let new = curr + 1;
+                        cas_n.add_unchecked(el, curr, new);
+                    }
+                    let success = cas_n.exec();
                     if success {
                         num_succeeded += 1;
                     }
@@ -60,7 +57,7 @@ fn cas2_sum(
         Err(_) => panic!(),
     };
     assert_ne!(total_succeeded, 0);
-    assert_eq!(total_succeeded * 2, sum);
+    assert_eq!(total_succeeded * (num_els as u64), sum);
     ret
 }
 
@@ -140,7 +137,7 @@ fn cas2_benchmark(c: &mut Criterion) {
     group.throughput(Throughput::Elements(threads * per_thread_attempts));
 
 
-    group.bench_function("cas2_sum_alloc", |b| {
+    /*group.bench_function("cas2_sum_alloc", |b| {
         b.iter_batched(
             || {
                 Arc::new(
@@ -156,15 +153,20 @@ fn cas2_benchmark(c: &mut Criterion) {
             |atoms| cas2_sum_alloc(atoms, threads as usize, per_thread_attempts as usize),
             BatchSize::SmallInput,
         )
-    });
+    });*/
 
-    group.bench_function("cas2_sum", |b| {
-        b.iter_batched(
-            || Arc::new((0..24000).map(|_| Atomic::new(0)).collect::<Vec<_>>()),
-            |atoms| cas2_sum(atoms, threads as usize, per_thread_attempts as usize),
-            BatchSize::SmallInput,
-        )
-    });
+    for n in 1..=4 {
+        group.bench_function(format!("casn_sum: {}", n), |b| {
+            b.iter_batched(
+                || Arc::new((0..24000).map(|_| Atomic::new(0)).collect::<Vec<_>>()),
+                |atoms| {
+                    casn_sum(atoms, threads as usize, n, per_thread_attempts as usize)
+                },
+                BatchSize::SmallInput,
+            )
+        });
+    }
+
 
     group.finish();
 }

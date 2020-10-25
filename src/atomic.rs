@@ -40,10 +40,10 @@ impl<T: Word> Atomic<T> {
     }
 }
 
-pub trait Word: sealed::Word + Into<Bits> + From<Bits> + Copy {}
-impl<T> Word for *mut T {}
+pub trait Word: sealed::Word + Into<Bits> + From<Bits> + Copy + 'static {}
+impl<T: 'static> Word for *mut T {}
 
-impl<T> From<*mut T> for Bits {
+impl<T: 'static> From<*mut T> for Bits {
     fn from(ptr: *mut T) -> Self {
         Bits::from_usize(ptr as _)
     }
@@ -55,15 +55,15 @@ impl<T> From<Bits> for *mut T {
     }
 }
 
-impl<T> Word for *const T {}
+impl<T: 'static> Word for *const T {}
 
-impl<T> From<*const T> for Bits {
+impl<T: 'static> From<*const T> for Bits {
     fn from(ptr: *const T) -> Self {
         Bits::from_usize(ptr as _)
     }
 }
 
-impl<T> From<Bits> for *const T {
+impl<T: 'static> From<Bits> for *const T {
     fn from(bits: Bits) -> Self {
         bits.into_usize() as _
     }
