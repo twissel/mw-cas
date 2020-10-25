@@ -8,7 +8,11 @@ use crate::{
 use arrayvec::ArrayVec;
 use crossbeam_utils::Backoff;
 use once_cell::sync::Lazy;
-use std::sync::atomic::{fence, AtomicUsize as StdAtomicUsize, Ordering};
+use std::{
+    mem,
+    mem::MaybeUninit,
+    sync::atomic::{fence, AtomicUsize as StdAtomicUsize, Ordering},
+};
 
 pub(crate) static CASN_DESCRIPTOR: Lazy<CasNDescriptor> = Lazy::new(CasNDescriptor::new);
 
@@ -193,19 +197,20 @@ struct ThreadCasNDescriptor {
 
 impl ThreadCasNDescriptor {
     fn new() -> Self {
+        let entries = {
+            let mut data: [MaybeUninit<AtomicEntry>; MAX_ENTRIES] =
+                unsafe { MaybeUninit::uninit().assume_init() };
+
+            for elem in &mut data[..] {
+                *elem = MaybeUninit::new(AtomicEntry::empty());
+            }
+
+            unsafe { mem::transmute::<_, [AtomicEntry; MAX_ENTRIES]>(data) }
+        };
         Self {
             status: AtomicCasNDescriptorStatus::new(),
             num_entries: StdAtomicUsize::new(0),
-            entries: [
-                AtomicEntry::empty(),
-                AtomicEntry::empty(),
-                AtomicEntry::empty(),
-                AtomicEntry::empty(),
-                AtomicEntry::empty(),
-                AtomicEntry::empty(),
-                AtomicEntry::empty(),
-                AtomicEntry::empty(),
-            ],
+            entries,
         }
     }
 
