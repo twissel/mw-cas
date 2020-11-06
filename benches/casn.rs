@@ -136,7 +136,6 @@ fn cas2_benchmark(c: &mut Criterion) {
     let per_thread_attempts = 20_000;
     group.throughput(Throughput::Elements(threads * per_thread_attempts));
 
-
     group.bench_function("cas2_sum_alloc", |b| {
         b.iter_batched(
             || {
@@ -166,7 +165,6 @@ fn cas2_benchmark(c: &mut Criterion) {
             )
         });
     }
-
 
     group.finish();
 }
